@@ -17,8 +17,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef CHAT_HEADER
-#define CHAT_HEADER
+#pragma once
 
 #include <string>
 #include <vector>
@@ -26,6 +25,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "irrlichttypes.h"
 #include "util/enriched_string.h"
+#include "settings.h"
 
 // Chat console related classes
 
@@ -73,11 +73,11 @@ class ChatBuffer
 {
 public:
 	ChatBuffer(u32 scrollback);
-	~ChatBuffer();
+	~ChatBuffer() = default;
 
 	// Append chat line
 	// Removes oldest chat line if scrollback size is reached
-	void addLine(std::wstring name, std::wstring text);
+	void addLine(const std::wstring &name, const std::wstring &text);
 
 	// Remove all chat lines
 	void clear();
@@ -119,6 +119,7 @@ public:
 	u32 formatChatLine(const ChatLine& line, u32 cols,
 			std::vector<ChatFormattedLine>& destination) const;
 
+	void resize(u32 scrollback);
 protected:
 	s32 getTopScrollPos() const;
 	s32 getBottomScrollPos() const;
@@ -145,14 +146,14 @@ class ChatPrompt
 {
 public:
 	ChatPrompt(const std::wstring &prompt, u32 history_limit);
-	~ChatPrompt();
+	~ChatPrompt() = default;
 
 	// Input character or string
 	void input(wchar_t ch);
 	void input(const std::wstring &str);
 
 	// Add a string to the history
-	void addToHistory(std::wstring line);
+	void addToHistory(const std::wstring &line);
 
 	// Get current line
 	std::wstring getLine() const { return m_line; }
@@ -164,7 +165,7 @@ public:
 	void clear();
 
 	// Replace the current line with the given text
-	std::wstring replace(std::wstring line);
+	std::wstring replace(const std::wstring &line);
 
 	// Select previous command from history
 	void historyPrev();
@@ -252,10 +253,10 @@ class ChatBackend
 {
 public:
 	ChatBackend();
-	~ChatBackend();
+	~ChatBackend() = default;
 
 	// Add chat message
-	void addMessage(std::wstring name, std::wstring text);
+	void addMessage(const std::wstring &name, std::wstring text);
 	// Parse and add unparsed chat message
 	void addUnparsedMessage(std::wstring line);
 
@@ -264,7 +265,7 @@ public:
 	// Get the recent messages buffer
 	ChatBuffer& getRecentBuffer();
 	// Concatenate all recent messages
-	EnrichedString getRecentChat();
+	EnrichedString getRecentChat() const;
 	// Get the console prompt
 	ChatPrompt& getPrompt();
 
@@ -282,11 +283,11 @@ public:
 	void scrollPageDown();
 	void scrollPageUp();
 
+	// Resize recent buffer based on settings
+	void applySettings();
+
 private:
 	ChatBuffer m_console_buffer;
 	ChatBuffer m_recent_buffer;
 	ChatPrompt m_prompt;
 };
-
-#endif
-

@@ -57,7 +57,7 @@ if(NOT USE_CURL)
 endif()
 
 
-option(ENABLE_GETTEXT "Use GetText for internationalization" FALSE)
+option(ENABLE_GETTEXT "Use GetText for internationalization" TRUE)
 set(USE_GETTEXT FALSE)
 
 if(ENABLE_GETTEXT)
@@ -99,19 +99,6 @@ if(BUILD_CLIENT AND ENABLE_SOUND)
 		message(FATAL_ERROR "Sound enabled, but cannot be used.\n"
 			"To continue, either fill in the required paths or disable sound. (-DENABLE_SOUND=0)")
 	endif()
-endif()
-
-if(USE_SOUND)
-	set(sound_SRCS sound_openal.cpp)
-	set(SOUND_INCLUDE_DIRS
-		${OPENAL_INCLUDE_DIR}
-		${VORBIS_INCLUDE_DIR}
-		${OGG_INCLUDE_DIR}
-		)
-	set(SOUND_LIBRARIES
-		${OPENAL_LIBRARY}
-		${VORBIS_LIBRARIES}
-		)
 endif()
 
 
@@ -252,6 +239,12 @@ if(NOT MSVC)
 	set(USE_GPROF FALSE CACHE BOOL "Use -pg flag for g++")
 endif()
 
+# Haiku endian support
+if(HAIKU)
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_BSD_SOURCE")
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_BSD_SOURCE")
+endif()
+
 # Use cmake_config.h
 add_definitions(-DUSE_CMAKE_CONFIG_H)
 
@@ -263,10 +256,12 @@ if(WIN32)
 		add_definitions ( /D "_CRT_SECURE_NO_DEPRECATE" /W1 )
 		# Get M_PI to work
 		add_definitions(/D "_USE_MATH_DEFINES")
+		# Dont define min/max macros in minwindef.h
+		add_definitions(/D "NOMINMAX")
 	else() # Probably MinGW = GCC
 		set(PLATFORM_LIBS "")
 	endif()
-	set(PLATFORM_LIBS ws2_32.lib shlwapi.lib ${PLATFORM_LIBS})
+	set(PLATFORM_LIBS ws2_32.lib version.lib shlwapi.lib ${PLATFORM_LIBS})
 
 	# Zlib stuff
 	set(ZLIB_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/../../zlib/zlib-1.2.5"
@@ -298,7 +293,9 @@ if(WIN32)
 else()
 	# Unix probably
 	if(BUILD_CLIENT)
-		find_package(X11 REQUIRED)
+		if(NOT HAIKU)
+			find_package(X11 REQUIRED)
+		endif(NOT HAIKU)
 		find_package(OpenGL REQUIRED)
 		find_package(JPEG REQUIRED)
 		find_package(BZip2 REQUIRED)
@@ -326,10 +323,12 @@ else()
 		endif(HAVE_LIBRT)
 	endif(APPLE)
 
+	if(NOT HAIKU AND NOT APPLE)
 	# This way Xxf86vm is found on OpenBSD too
-	find_library(XXF86VM_LIBRARY Xxf86vm)
-	mark_as_advanced(XXF86VM_LIBRARY)
-	set(CLIENT_PLATFORM_LIBS ${CLIENT_PLATFORM_LIBS} ${XXF86VM_LIBRARY})
+		find_library(XXF86VM_LIBRARY Xxf86vm)
+		mark_as_advanced(XXF86VM_LIBRARY)
+		set(CLIENT_PLATFORM_LIBS ${CLIENT_PLATFORM_LIBS} ${XXF86VM_LIBRARY})
+	endif(NOT HAIKU AND NOT APPLE)
 
 	# Prefer local iconv if installed
 	find_library(ICONV_LIBRARY iconv)
@@ -359,15 +358,23 @@ add_custom_target(GenerateVersion
 
 
 add_subdirectory(threading)
+add_subdirectory(content)
+add_subdirectory(database)
+add_subdirectory(gui)
+add_subdirectory(mapgen)
 add_subdirectory(network)
 add_subdirectory(script)
 add_subdirectory(unittest)
 add_subdirectory(util)
 add_subdirectory(irrlicht_changes)
+add_subdirectory(server)
 
 set(common_SRCS
+	${database_SRCS}
+	${mapgen_SRCS}
+	${server_SRCS}
+	${content_SRCS}
 	ban.cpp
-	cavegen.cpp
 	chat.cpp
 	clientiface.cpp
 	collision.cpp
@@ -376,16 +383,8 @@ set(common_SRCS
 	content_sao.cpp
 	convert_json.cpp
 	craftdef.cpp
-	database-dummy.cpp
-	database-files.cpp
-	database-leveldb.cpp
-	database-postgresql.cpp
-	database-redis.cpp
-	database-sqlite3.cpp
-	database.cpp
 	debug.cpp
 	defaultsettings.cpp
-	dungeongen.cpp
 	emerge.cpp
 	environment.cpp
 	face_position_cache.cpp
@@ -402,23 +401,10 @@ set(common_SRCS
 	map.cpp
 	map_settings_manager.cpp
 	mapblock.cpp
-	mapgen.cpp
-	mapgen_carpathian.cpp
-	mapgen_flat.cpp
-	mapgen_fractal.cpp
-	mapgen_singlenode.cpp
-	mapgen_v5.cpp
-	mapgen_v6.cpp
-	mapgen_v7.cpp
-	mapgen_valleys.cpp
 	mapnode.cpp
 	mapsector.cpp
 	metadata.cpp
-	mg_biome.cpp
-	mg_decoration.cpp
-	mg_ore.cpp
-	mg_schematic.cpp
-	mods.cpp
+	modchannels.cpp
 	nameidmapping.cpp
 	nodedef.cpp
 	nodemetadata.cpp
@@ -442,17 +428,15 @@ set(common_SRCS
 	serverlist.cpp
 	serverobject.cpp
 	settings.cpp
-	socket.cpp
-	sound.cpp
 	staticobject.cpp
-	subgame.cpp
 	terminal_chat_console.cpp
 	tileanimation.cpp
 	tool.cpp
-	treegen.cpp
+	translation.cpp
 	version.cpp
 	voxel.cpp
 	voxelalgorithms.cpp
+	hud.cpp
 	${common_network_SRCS}
 	${JTHREAD_SRCS}
 	${common_SCRIPT_SRCS}
@@ -475,9 +459,9 @@ if(WIN32)
 			-o ${CMAKE_CURRENT_BINARY_DIR}/winresource_rc.o
 			WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 			DEPENDS ${WINRESOURCE_FILE})
-		SET(common_SRCS ${common_SRCS} ${CMAKE_CURRENT_BINARY_DIR}/winresource_rc.o)
+		SET(extra_windows_SRCS ${CMAKE_CURRENT_BINARY_DIR}/winresource_rc.o)
 	else(MINGW) # Probably MSVC
-		set(common_SRCS ${common_SRCS} ${WINRESOURCE_FILE} ${MINETEST_EXE_MANIFEST_FILE})
+		set(extra_windows_SRCS ${WINRESOURCE_FILE} ${MINETEST_EXE_MANIFEST_FILE})
 	endif(MINGW)
 endif()
 
@@ -490,7 +474,7 @@ endif(BUILD_CLIENT)
 set(client_SRCS
 	${client_SRCS}
 	${common_SRCS}
-	${sound_SRCS}
+	${gui_SRCS}
 	${client_network_SRCS}
 	${client_irrlicht_changes_SRCS}
 	camera.cpp
@@ -507,18 +491,9 @@ set(client_SRCS
 	filecache.cpp
 	fontengine.cpp
 	game.cpp
-	guiChatConsole.cpp
-	guiEngine.cpp
-	guiPathSelectMenu.cpp
-	guiFormSpecMenu.cpp
-	guiKeyChangeMenu.cpp
-	guiPasswordChange.cpp
 	guiscalingfilter.cpp
-	guiTable.cpp
-	guiVolumeChange.cpp
 	hud.cpp
 	imagefilters.cpp
-	intlGUIEditBox.cpp
 	keycode.cpp
 	localplayer.cpp
 	main.cpp
@@ -541,6 +516,13 @@ set(server_SRCS
 	main.cpp
 )
 list(SORT server_SRCS)
+
+# Avoid source_group on broken CMake version.
+# see issue #7074 #7075
+if (CMAKE_VERSION VERSION_GREATER 3.8.1)
+	source_group(TREE ${PROJECT_SOURCE_DIR} PREFIX "Source Files" FILES ${client_SRCS})
+	source_group(TREE ${PROJECT_SOURCE_DIR} PREFIX "Source Files" FILES ${server_SRCS})
+endif()
 
 include_directories(
 	${PROJECT_BINARY_DIR}
@@ -573,7 +555,7 @@ set(EXECUTABLE_OUTPUT_PATH "${CMAKE_SOURCE_DIR}/bin")
 
 
 if(BUILD_CLIENT)
-	add_executable(${PROJECT_NAME} ${client_SRCS})
+	add_executable(${PROJECT_NAME} ${client_SRCS} ${extra_windows_SRCS})
 	add_dependencies(${PROJECT_NAME} GenerateVersion)
 	set(client_LIBS
 		${PROJECT_NAME}
@@ -641,7 +623,7 @@ endif(BUILD_CLIENT)
 
 
 if(BUILD_SERVER)
-	add_executable(${PROJECT_NAME}server ${server_SRCS})
+	add_executable(${PROJECT_NAME}server ${server_SRCS} ${extra_windows_SRCS})
 	add_dependencies(${PROJECT_NAME}server GenerateVersion)
 	target_link_libraries(
 		${PROJECT_NAME}server

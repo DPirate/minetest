@@ -30,7 +30,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "noise.h"         // easeCurve
 #include "sound.h"
 #include "event.h"
-#include "profiler.h"
+#include "nodedef.h"
 #include "util/numeric.h"
 #include "constants.h"
 #include "fontengine.h"
@@ -71,9 +71,10 @@ Camera::Camera(MapDrawControl &draw_control, Client *client):
 	 */
 	m_cache_fall_bobbing_amount = g_settings->getFloat("fall_bobbing_amount");
 	m_cache_view_bobbing_amount = g_settings->getFloat("view_bobbing_amount");
-	m_cache_fov                 = g_settings->getFloat("fov");
-	m_cache_zoom_fov            = g_settings->getFloat("zoom_fov");
-	m_arm_inertia		    = g_settings->getBool("arm_inertia");
+	// 45 degrees is the lowest FOV that doesn't cause the server to treat this
+	// as a zoom FOV and load world beyond the set server limits.
+	m_cache_fov                 = std::fmax(g_settings->getFloat("fov"), 45.0f);
+	m_arm_inertia               = g_settings->getBool("arm_inertia");
 	m_nametags.clear();
 }
 
@@ -161,15 +162,13 @@ void Camera::step(f32 dtime)
 					(was < 0.5f && m_view_bobbing_anim >= 0.5f) ||
 					(was > 0.5f && m_view_bobbing_anim <= 0.5f));
 			if(step) {
-				MtEvent *e = new SimpleTriggerEvent("ViewBobbingStep");
-				m_client->event()->put(e);
+				m_client->getEventManager()->put(new SimpleTriggerEvent(MtEvent::VIEW_BOBBING_STEP));
 			}
 		}
 	}
 
-	if (m_digging_button != -1)
-	{
-		f32 offset = dtime * 3.5;
+	if (m_digging_button != -1) {
+		f32 offset = dtime * 3.5f;
 		float m_digging_anim_was = m_digging_anim;
 		m_digging_anim += offset;
 		if (m_digging_anim >= 1)
@@ -180,13 +179,10 @@ void Camera::step(f32 dtime)
 		float lim = 0.15;
 		if(m_digging_anim_was < lim && m_digging_anim >= lim)
 		{
-			if(m_digging_button == 0)
-			{
-				MtEvent *e = new SimpleTriggerEvent("CameraPunchLeft");
-				m_client->event()->put(e);
+			if (m_digging_button == 0) {
+				m_client->getEventManager()->put(new SimpleTriggerEvent(MtEvent::CAMERA_PUNCH_LEFT));
 			} else if(m_digging_button == 1) {
-				MtEvent *e = new SimpleTriggerEvent("CameraPunchRight");
-				m_client->event()->put(e);
+				m_client->getEventManager()->put(new SimpleTriggerEvent(MtEvent::CAMERA_PUNCH_RIGHT));
 			}
 		}
 	}
@@ -283,8 +279,7 @@ void Camera::addArmInertia(f32 player_yaw)
 	}
 }
 
-void Camera::update(LocalPlayer* player, f32 frametime, f32 busytime,
-		f32 tool_reload_ratio, ClientEnvironment &c_env)
+void Camera::update(LocalPlayer* player, f32 frametime, f32 busytime, f32 tool_reload_ratio)
 {
 	// Get player position
 	// Smooth the movement when walking up stairs
@@ -298,7 +293,7 @@ void Camera::update(LocalPlayer* player, f32 frametime, f32 busytime,
 	{
 		f32 oldy = old_player_position.Y;
 		f32 newy = player_position.Y;
-		f32 t = exp(-23*frametime);
+		f32 t = std::exp(-23 * frametime);
 		player_position.Y = oldy * t + newy * (1-t);
 	}
 
@@ -408,19 +403,19 @@ void Camera::update(LocalPlayer* player, f32 frametime, f32 busytime,
 
 		// Calculate new position
 		bool abort = false;
-		for (int i = BS; i <= BS*2.75; i++)
-		{
-			my_cp.X = m_camera_position.X + m_camera_direction.X*-i;
-			my_cp.Z = m_camera_position.Z + m_camera_direction.Z*-i;
+		for (int i = BS; i <= BS * 2.75; i++) {
+			my_cp.X = m_camera_position.X + m_camera_direction.X * -i;
+			my_cp.Z = m_camera_position.Z + m_camera_direction.Z * -i;
 			if (i > 12)
-				my_cp.Y = m_camera_position.Y + (m_camera_direction.Y*-i);
+				my_cp.Y = m_camera_position.Y + (m_camera_direction.Y * -i);
 
 			// Prevent camera positioned inside nodes
-			INodeDefManager *nodemgr = m_client->ndef();
-			MapNode n = c_env.getClientMap().getNodeNoEx(floatToInt(my_cp, BS));
+			const NodeDefManager *nodemgr = m_client->ndef();
+			MapNode n = m_client->getEnv().getClientMap()
+				.getNodeNoEx(floatToInt(my_cp, BS));
+
 			const ContentFeatures& features = nodemgr->get(n);
-			if(features.walkable)
-			{
+			if (features.walkable) {
 				my_cp.X += m_camera_direction.X*-1*-BS/2;
 				my_cp.Z += m_camera_direction.Z*-1*-BS/2;
 				my_cp.Y += m_camera_direction.Y*-1*-BS/2;
@@ -448,18 +443,20 @@ void Camera::update(LocalPlayer* player, f32 frametime, f32 busytime,
 	// *100.0 helps in large map coordinates
 	m_cameranode->setTarget(my_cp-intToFloat(m_camera_offset, BS) + 100 * m_camera_direction);
 
-	// update the camera position in front-view mode to render blocks behind player
-	if (m_camera_mode == CAMERA_MODE_THIRD_FRONT)
+	// update the camera position in third-person mode to render blocks behind player
+	// and correctly apply liquid post FX.
+	if (m_camera_mode != CAMERA_MODE_FIRST)
 		m_camera_position = my_cp;
 
 	// Get FOV
 	f32 fov_degrees;
-	if (player->getPlayerControl().zoom && m_client->checkLocalPrivilege("zoom")) {
-		fov_degrees = m_cache_zoom_fov;
+	// Disable zoom with zoom FOV = 0
+	if (player->getPlayerControl().zoom && player->getZoomFOV() > 0.001f) {
+		fov_degrees = player->getZoomFOV();
 	} else {
 		fov_degrees = m_cache_fov;
 	}
-	fov_degrees = rangelim(fov_degrees, 7.0, 160.0);
+	fov_degrees = rangelim(fov_degrees, 1.0f, 160.0f);
 
 	// FOV and aspect ratio
 	const v2u32 &window_size = RenderingEngine::get_instance()->getWindowSize();
@@ -486,7 +483,7 @@ void Camera::update(LocalPlayer* player, f32 frametime, f32 busytime,
 		if(m_digging_anim > 0.5)
 			frac = 2.0 * (m_digging_anim - 0.5);
 		// This value starts from 1 and settles to 0
-		f32 ratiothing = pow((1.0f - tool_reload_ratio), 0.5f);
+		f32 ratiothing = std::pow((1.0f - tool_reload_ratio), 0.5f);
 		//f32 ratiothing2 = pow(ratiothing, 0.5f);
 		f32 ratiothing2 = (easeCurve(ratiothing*0.5))*2.0;
 		wield_position.Y -= frac * 25.0 * pow(ratiothing2, 1.7f);
@@ -526,7 +523,7 @@ void Camera::update(LocalPlayer* player, f32 frametime, f32 busytime,
 	// If the player is walking, swimming, or climbing,
 	// view bobbing is enabled and free_move is off,
 	// start (or continue) the view bobbing animation.
-	v3f speed = player->getSpeed();
+	const v3f &speed = player->getSpeed();
 	const bool movement_XZ = hypot(speed.X, speed.Z) > BS;
 	const bool movement_Y = fabs(speed.Y) > BS;
 
@@ -550,7 +547,10 @@ void Camera::update(LocalPlayer* player, f32 frametime, f32 busytime,
 void Camera::updateViewingRange()
 {
 	f32 viewing_range = g_settings->getFloat("viewing_range");
-	m_draw_control.wanted_range = viewing_range;
+	f32 near_plane = g_settings->getFloat("near_plane");
+
+	m_draw_control.wanted_range = std::fmin(adjustDist(viewing_range, getFovMax()), 4000);
+	m_cameranode->setNearValue(rangelim(near_plane, 0.0f, 0.5f) * BS);
 	if (m_draw_control.range_all) {
 		m_cameranode->setFarValue(100000.0);
 		return;
@@ -617,14 +617,15 @@ void Camera::drawNametags()
 			// shadow can remain.
 			continue;
 		}
-		v3f pos = nametag->parent_node->getAbsolutePosition() + v3f(0.0, 1.1 * BS, 0.0);
+		v3f pos = nametag->parent_node->getAbsolutePosition() + nametag->nametag_pos * BS;
 		f32 transformed_pos[4] = { pos.X, pos.Y, pos.Z, 1.0f };
 		trans.multiplyWith1x4Matrix(transformed_pos);
 		if (transformed_pos[3] > 0) {
-			std::string nametag_colorless = unescape_enriched(nametag->nametag_text);
+			std::wstring nametag_colorless =
+				unescape_translate(utf8_to_wide(nametag->nametag_text));
 			core::dimension2d<u32> textsize =
 				g_fontengine->getFont()->getDimension(
-				utf8_to_wide(nametag_colorless).c_str());
+				nametag_colorless.c_str());
 			f32 zDiv = transformed_pos[3] == 0.0f ? 1.0f :
 				core::reciprocal(transformed_pos[3]);
 			v2u32 screensize = RenderingEngine::get_video_driver()->getScreenSize();
@@ -634,16 +635,18 @@ void Camera::drawNametags()
 			screen_pos.Y = screensize.Y *
 				(0.5 - transformed_pos[1] * zDiv * 0.5) - textsize.Height / 2;
 			core::rect<s32> size(0, 0, textsize.Width, textsize.Height);
-			g_fontengine->getFont()->draw(utf8_to_wide(nametag->nametag_text).c_str(),
-					size + screen_pos, nametag->nametag_color);
+			g_fontengine->getFont()->draw(
+				translate_string(utf8_to_wide(nametag->nametag_text)).c_str(),
+				size + screen_pos, nametag->nametag_color);
 		}
 	}
 }
 
 Nametag *Camera::addNametag(scene::ISceneNode *parent_node,
-		std::string nametag_text, video::SColor nametag_color)
+		const std::string &nametag_text, video::SColor nametag_color,
+		const v3f &pos)
 {
-	Nametag *nametag = new Nametag(parent_node, nametag_text, nametag_color);
+	Nametag *nametag = new Nametag(parent_node, nametag_text, nametag_color, pos);
 	m_nametags.push_back(nametag);
 	return nametag;
 }

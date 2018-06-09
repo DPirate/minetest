@@ -17,11 +17,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef UTIL_TIMETAKER_HEADER
-#define UTIL_TIMETAKER_HEADER
+#pragma once
 
-#include "../irrlichttypes.h"
-#include "../gettime.h"
+#include "irrlichttypes.h"
+#include "gettime.h"
 
 /*
 	TimeTaker
@@ -49,6 +48,3 @@ private:
 	TimePrecision m_precision;
 	u64 *m_result = nullptr;
 };
-
-#endif
-

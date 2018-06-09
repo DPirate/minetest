@@ -17,8 +17,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef SETTINGS_HEADER
-#define SETTINGS_HEADER
+#pragma once
 
 #include "irrlichttypes_bloated.h"
 #include "util/string.h"
@@ -73,7 +72,7 @@ struct ValueSpec {
 };
 
 struct SettingsEntry {
-	SettingsEntry() {}
+	SettingsEntry() = default;
 
 	SettingsEntry(const std::string &value_) :
 		value(value_)
@@ -93,7 +92,8 @@ typedef std::unordered_map<std::string, SettingsEntry> SettingEntries;
 
 class Settings {
 public:
-	Settings() {}
+	Settings() = default;
+
 	~Settings();
 
 	Settings & operator += (const Settings &other);
@@ -129,8 +129,10 @@ public:
 	 ***********/
 
 	const SettingsEntry &getEntry(const std::string &name) const;
+	const SettingsEntry &getEntryDefault(const std::string &name) const;
 	Settings *getGroup(const std::string &name) const;
 	const std::string &get(const std::string &name) const;
+	const std::string &getDefault(const std::string &name) const;
 	bool getBool(const std::string &name) const;
 	u16 getU16(const std::string &name) const;
 	s16 getS16(const std::string &name) const;
@@ -160,8 +162,10 @@ public:
 	 ***************************************/
 
 	bool getEntryNoEx(const std::string &name, SettingsEntry &val) const;
+	bool getEntryDefaultNoEx(const std::string &name, SettingsEntry &val) const;
 	bool getGroupNoEx(const std::string &name, Settings *&val) const;
 	bool getNoEx(const std::string &name, std::string &val) const;
+	bool getDefaultNoEx(const std::string &name, std::string &val) const;
 	bool getFlag(const std::string &name) const;
 	bool getU16NoEx(const std::string &name, u16 &val) const;
 	bool getS16NoEx(const std::string &name, s16 &val) const;
@@ -234,6 +238,3 @@ private:
 	mutable std::mutex m_mutex;
 
 };
-
-#endif
-

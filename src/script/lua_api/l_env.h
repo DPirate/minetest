@@ -17,8 +17,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef L_ENV_H_
-#define L_ENV_H_
+#pragma once
 
 #include "lua_api/l_base.h"
 #include "serverenvironment.h"
@@ -29,6 +28,10 @@ private:
 	// set_node(pos, node)
 	// pos = {x=num, y=num, z=num}
 	static int l_set_node(lua_State *L);
+
+	// bulk_set_node([pos1, pos2, ...], node)
+	// pos = {x=num, y=num, z=num}
+	static int l_bulk_set_node(lua_State *L);
 
 	static int l_add_node(lua_State *L);
 
@@ -157,7 +160,7 @@ private:
 	// spawn_tree(pos, treedef)
 	static int l_spawn_tree(lua_State *L);
 
-	// line_of_sight(pos1, pos2, stepsize) -> true/false
+	// line_of_sight(pos1, pos2) -> true/false
 	static int l_line_of_sight(lua_State *L);
 
 	// raycast(pos1, pos2, objects, liquids) -> Raycast
@@ -189,15 +192,15 @@ class LuaABM : public ActiveBlockModifier {
 private:
 	int m_id;
 
-	std::set<std::string> m_trigger_contents;
-	std::set<std::string> m_required_neighbors;
+	std::vector<std::string> m_trigger_contents;
+	std::vector<std::string> m_required_neighbors;
 	float m_trigger_interval;
 	u32 m_trigger_chance;
 	bool m_simple_catch_up;
 public:
 	LuaABM(lua_State *L, int id,
-			const std::set<std::string> &trigger_contents,
-			const std::set<std::string> &required_neighbors,
+			const std::vector<std::string> &trigger_contents,
+			const std::vector<std::string> &required_neighbors,
 			float trigger_interval, u32 trigger_chance, bool simple_catch_up):
 		m_id(id),
 		m_trigger_contents(trigger_contents),
@@ -207,11 +210,11 @@ public:
 		m_simple_catch_up(simple_catch_up)
 	{
 	}
-	virtual const std::set<std::string> &getTriggerContents() const
+	virtual const std::vector<std::string> &getTriggerContents() const
 	{
 		return m_trigger_contents;
 	}
-	virtual const std::set<std::string> &getRequiredNeighbors() const
+	virtual const std::vector<std::string> &getRequiredNeighbors() const
 	{
 		return m_required_neighbors;
 	}
@@ -297,5 +300,3 @@ struct ScriptCallbackState {
 	unsigned int refcount;
 	std::string origin;
 };
-
-#endif /* L_ENV_H_ */

@@ -17,12 +17,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef PLAYER_HEADER
-#define PLAYER_HEADER
+#pragma once
 
 #include "irrlichttypes_bloated.h"
 #include "inventory.h"
 #include "constants.h"
+#include "network/networkprotocol.h"
+#include "util/basic_macros.h"
 #include <list>
 #include <mutex>
 
@@ -33,7 +34,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 struct PlayerControl
 {
-	PlayerControl() {}
+	PlayerControl() = default;
 
 	PlayerControl(
 		bool a_up,
@@ -83,14 +84,23 @@ struct PlayerControl
 	float forw_move_joystick_axis = 0.0f;
 };
 
+struct PlayerSettings
+{
+	bool free_move = false;
+	bool fast_move = false;
+	bool continuous_forward = false;
+	bool always_fly_fast = false;
+	bool aux1_descends = false;
+	bool noclip = false;
+
+	void readGlobalSettings();
+};
+
 class Map;
 struct CollisionInfo;
 struct HudElement;
 class Environment;
 
-// IMPORTANT:
-// Do *not* perform an assignment or copy operation on a Player or
-// RemotePlayer object!  This will copy the lock held for HUD synchronization
 class Player
 {
 public:
@@ -98,18 +108,20 @@ public:
 	Player(const char *name, IItemDefManager *idef);
 	virtual ~Player() = 0;
 
+	DISABLE_CLASS_COPY(Player);
+
 	virtual void move(f32 dtime, Environment *env, f32 pos_max_d)
 	{}
 	virtual void move(f32 dtime, Environment *env, f32 pos_max_d,
 			std::vector<CollisionInfo> *collision_info)
 	{}
 
-	v3f getSpeed()
+	const v3f &getSpeed() const
 	{
 		return m_speed;
 	}
 
-	void setSpeed(v3f speed)
+	void setSpeed(const v3f &speed)
 	{
 		m_speed = speed;
 	}
@@ -147,12 +159,13 @@ public:
 	v2s32 local_animations[4];
 	float local_animation_speed;
 
-	u16 peer_id = PEER_ID_INEXISTENT;
-
 	std::string inventory_formspec;
+	std::string formspec_prepend;
 
 	PlayerControl control;
 	const PlayerControl& getPlayerControl() { return control; }
+	PlayerSettings &getPlayerSettings() { return m_player_settings; }
+	static void settingsChangedCallback(const std::string &name, void *data);
 
 	u32 keyPressed = 0;
 
@@ -173,7 +186,5 @@ private:
 	// hud for example can be modified by EmergeThread
 	// and ServerThread
 	std::mutex m_mutex;
+	PlayerSettings m_player_settings;
 };
-
-#endif
-

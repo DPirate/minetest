@@ -17,18 +17,19 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef LOCALPLAYER_HEADER
-#define LOCALPLAYER_HEADER
+#pragma once
 
 #include "player.h"
 #include "environment.h"
 #include "constants.h"
+#include "settings.h"
 #include <list>
 
 class Client;
 class Environment;
 class GenericCAO;
 class ClientActiveObject;
+class ClientEnvironment;
 class IGameDef;
 
 enum LocalPlayerAnimations
@@ -43,7 +44,7 @@ class LocalPlayer : public Player
 {
 public:
 	LocalPlayer(Client *client, const char *name);
-	virtual ~LocalPlayer();
+	virtual ~LocalPlayer() = default;
 
 	ClientActiveObject *parent = nullptr;
 
@@ -78,7 +79,7 @@ public:
 	void old_move(f32 dtime, Environment *env, f32 pos_max_d,
 			std::vector<CollisionInfo> *collision_info);
 
-	void applyControl(float dtime);
+	void applyControl(float dtime, Environment *env);
 
 	v3s16 getStandingNodePos();
 	v3s16 getFootstepNodePos();
@@ -123,11 +124,9 @@ public:
 	v3s16 getLightPosition() const;
 
 	void setYaw(f32 yaw) { m_yaw = yaw; }
-
 	f32 getYaw() const { return m_yaw; }
 
 	void setPitch(f32 pitch) { m_pitch = pitch; }
-
 	f32 getPitch() const { return m_pitch; }
 
 	inline void setPosition(const v3f &position)
@@ -139,15 +138,21 @@ public:
 	v3f getPosition() const { return m_position; }
 	v3f getEyePosition() const { return m_position + getEyeOffset(); }
 	v3f getEyeOffset() const;
+	void setEyeHeight(float eye_height) { m_eye_height = eye_height; }
 
 	void setCollisionbox(const aabb3f &box) { m_collisionbox = box; }
+
+	float getZoomFOV() const { return m_zoom_fov; }
+	void setZoomFOV(float zoom_fov) { m_zoom_fov = zoom_fov; }
 
 private:
 	void accelerateHorizontal(const v3f &target_speed, const f32 max_increase);
 	void accelerateVertical(const v3f &target_speed, const f32 max_increase);
 	bool updateSneakNode(Map *map, const v3f &position, const v3f &sneak_max);
+	float getSlipFactor(Environment *env, const v3f &speedH);
 
 	v3f m_position;
+	v3s16 m_standing_node;
 
 	v3s16 m_sneak_node = v3s16(32767, 32767, 32767);
 	// Stores the top bounding box of m_sneak_node
@@ -170,15 +175,15 @@ private:
 	// ***** End of variables for temporary option *****
 
 	bool m_can_jump = false;
-	u16 m_breath = PLAYER_MAX_BREATH;
+	u16 m_breath = PLAYER_MAX_BREATH_DEFAULT;
 	f32 m_yaw = 0.0f;
 	f32 m_pitch = 0.0f;
 	bool camera_barely_in_ceiling = false;
 	aabb3f m_collisionbox = aabb3f(-BS * 0.30f, 0.0f, -BS * 0.30f, BS * 0.30f,
 			BS * 1.75f, BS * 0.30f);
+	float m_eye_height = 1.625f;
+	float m_zoom_fov = 0.0f;
 
 	GenericCAO *m_cao = nullptr;
 	Client *m_client;
 };
-
-#endif

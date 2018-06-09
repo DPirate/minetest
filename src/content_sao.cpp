@@ -28,6 +28,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "server.h"
 #include "scripting_server.h"
 #include "genericobject.h"
+#include "settings.h"
+#include <algorithm>
+#include <cmath>
 
 std::map<u16, ServerActiveObject::Factory> ServerActiveObject::m_types;
 
@@ -59,7 +62,7 @@ public:
 		m_age += dtime;
 		if(m_age > 10)
 		{
-			m_removed = true;
+			m_pending_removal = true;
 			return;
 		}
 
@@ -67,7 +70,7 @@ public:
 		if(m_base_position.Y > 8*BS)
 			m_base_position.Y = 2*BS;
 
-		if(send_recommended == false)
+		if (!send_recommended)
 			return;
 
 		m_timer1 -= dtime;
@@ -155,6 +158,12 @@ void UnitSAO::getAnimation(v2f *frame_range, float *frame_speed, float *frame_bl
 	*frame_loop = m_animation_loop;
 }
 
+void UnitSAO::setAnimationSpeed(float frame_speed)
+{
+	m_animation_speed = frame_speed;
+	m_animation_speed_sent = false;
+}
+
 void UnitSAO::setBonePosition(const std::string &bone, v3f position, v3f rotation)
 {
 	// store these so they can be updated to clients
@@ -178,11 +187,17 @@ void UnitSAO::setAttachment(int parent_id, const std::string &bone, v3f position
 	// This breaks some things so we also give the server the most accurate representation
 	// even if players only see the client changes.
 
+	int old_parent = m_attachment_parent_id;
 	m_attachment_parent_id = parent_id;
 	m_attachment_bone = bone;
 	m_attachment_position = position;
 	m_attachment_rotation = rotation;
 	m_attachment_sent = false;
+
+	if (parent_id != old_parent) {
+		onDetach(old_parent);
+		onAttach(parent_id);
+	}
 }
 
 void UnitSAO::getAttachment(int *parent_id, std::string *bone, v3f *position,
@@ -192,6 +207,30 @@ void UnitSAO::getAttachment(int *parent_id, std::string *bone, v3f *position,
 	*bone = m_attachment_bone;
 	*position = m_attachment_position;
 	*rotation = m_attachment_rotation;
+}
+
+void UnitSAO::clearChildAttachments()
+{
+	for (int child_id : m_attachment_child_ids) {
+		// Child can be NULL if it was deleted earlier
+		if (ServerActiveObject *child = m_env->getActiveObject(child_id))
+			child->setAttachment(0, "", v3f(0, 0, 0), v3f(0, 0, 0));
+	}
+	m_attachment_child_ids.clear();
+}
+
+void UnitSAO::clearParentAttachment()
+{
+	ServerActiveObject *parent = nullptr;
+	if (m_attachment_parent_id) {
+		parent = m_env->getActiveObject(m_attachment_parent_id);
+		setAttachment(0, "", m_attachment_position, m_attachment_rotation);
+	} else {
+		setAttachment(0, "", v3f(0, 0, 0), v3f(0, 0, 0));
+	}
+	// Do it
+	if (parent)
+		parent->removeAttachmentChild(m_id);
 }
 
 void UnitSAO::addAttachmentChild(int child_id)
@@ -209,6 +248,38 @@ const std::unordered_set<int> &UnitSAO::getAttachmentChildIds()
 	return m_attachment_child_ids;
 }
 
+void UnitSAO::onAttach(int parent_id)
+{
+	if (!parent_id)
+		return;
+
+	ServerActiveObject *parent = m_env->getActiveObject(parent_id);
+
+	if (!parent || parent->isGone())
+		return; // Do not try to notify soon gone parent
+
+	if (parent->getType() == ACTIVEOBJECT_TYPE_LUAENTITY) {
+		// Call parent's on_attach field
+		m_env->getScriptIface()->luaentity_on_attach_child(parent_id, this);
+	}
+}
+
+void UnitSAO::onDetach(int parent_id)
+{
+	if (!parent_id)
+		return;
+
+	ServerActiveObject *parent = m_env->getActiveObject(parent_id);
+	if (getType() == ACTIVEOBJECT_TYPE_LUAENTITY)
+		m_env->getScriptIface()->luaentity_on_detach(m_id, parent);
+
+	if (!parent || parent->isGone())
+		return; // Do not try to notify soon gone parent
+
+	if (parent->getType() == ACTIVEOBJECT_TYPE_LUAENTITY)
+		m_env->getScriptIface()->luaentity_on_detach_child(parent_id, this);
+}
+
 ObjectProperties* UnitSAO::accessObjectProperties()
 {
 	return &m_prop;
@@ -216,6 +287,7 @@ ObjectProperties* UnitSAO::accessObjectProperties()
 
 void UnitSAO::notifyObjectPropertiesModified()
 {
+	m_env->updateActiveObject(this);
 	m_properties_sent = false;
 }
 
@@ -245,9 +317,8 @@ LuaEntitySAO::~LuaEntitySAO()
 		m_env->getScriptIface()->luaentity_Remove(m_id);
 	}
 
-	for (std::unordered_set<u32>::iterator it = m_attached_particle_spawners.begin();
-		it != m_attached_particle_spawners.end(); ++it) {
-		m_env->deleteParticleSpawner(*it, false);
+	for (u32 attached_particle_spawner : m_attached_particle_spawners) {
+		m_env->deleteParticleSpawner(attached_particle_spawner, false);
 	}
 }
 
@@ -263,11 +334,13 @@ void LuaEntitySAO::addedToEnvironment(u32 dtime_s)
 		// Get properties
 		m_env->getScriptIface()->
 			luaentity_GetProperties(m_id, &m_prop);
+		// Notify the environment of the new properties
+		m_env->updateActiveObject(this);
 		// Initialize HP from properties
 		m_hp = m_prop.hp_max;
 		// Activate entity, supplying serialized state
 		m_env->getScriptIface()->
-			luaentity_Activate(m_id, m_init_state.c_str(), dtime_s);
+			luaentity_Activate(m_id, m_init_state, dtime_s);
 	} else {
 		m_prop.infotext = m_init_name;
 	}
@@ -281,7 +354,7 @@ ServerActiveObject* LuaEntitySAO::create(ServerEnvironment *env, v3f pos,
 	s16 hp = 1;
 	v3f velocity;
 	float yaw = 0;
-	if(data != ""){
+	if (!data.empty()) {
 		std::istringstream is(data, std::ios::binary);
 		// read version
 		u8 version = readU8(is);
@@ -366,20 +439,20 @@ void LuaEntitySAO::step(float dtime, bool send_recommended)
 			m_velocity += dtime * m_acceleration;
 		}
 
-		if((m_prop.automatic_face_movement_dir) &&
-				(fabs(m_velocity.Z) > 0.001 || fabs(m_velocity.X) > 0.001))
-		{
-			float optimal_yaw = atan2(m_velocity.Z,m_velocity.X) * 180 / M_PI
-					+ m_prop.automatic_face_movement_dir_offset;
+		if (m_prop.automatic_face_movement_dir &&
+				(fabs(m_velocity.Z) > 0.001 || fabs(m_velocity.X) > 0.001)) {
+
+			float target_yaw = atan2(m_velocity.Z, m_velocity.X) * 180 / M_PI
+				+ m_prop.automatic_face_movement_dir_offset;
 			float max_rotation_delta =
 					dtime * m_prop.automatic_face_movement_max_rotation_per_sec;
+			float delta = wrapDegrees_0_360(target_yaw - m_yaw);
 
-			if ((m_prop.automatic_face_movement_max_rotation_per_sec > 0) &&
-				(fabs(m_yaw - optimal_yaw) > max_rotation_delta)) {
-
-				m_yaw = optimal_yaw < m_yaw ? m_yaw - max_rotation_delta : m_yaw + max_rotation_delta;
+			if (delta > max_rotation_delta && 360 - delta > max_rotation_delta) {
+				m_yaw += (delta < 180) ? max_rotation_delta : -max_rotation_delta;
+				m_yaw = wrapDegrees_0_360(m_yaw);
 			} else {
-				m_yaw = optimal_yaw;
+				m_yaw = target_yaw;
 			}
 		}
 	}
@@ -388,21 +461,7 @@ void LuaEntitySAO::step(float dtime, bool send_recommended)
 		m_env->getScriptIface()->luaentity_Step(m_id, dtime);
 	}
 
-	// Remove LuaEntity beyond terrain edges
-	{
-		ServerMap *map = dynamic_cast<ServerMap *>(&m_env->getMap());
-		assert(map);
-		if (!m_pending_deactivation &&
-				map->saoPositionOverLimit(m_base_position)) {
-			infostream << "Remove SAO " << m_id << "(" << m_init_name
-				<< "), outside of limits" << std::endl;
-			m_pending_deactivation = true;
-			m_removed = true;
-			return;
-		}
-	}
-
-	if(send_recommended == false)
+	if (!send_recommended)
 		return;
 
 	if(!isAttached())
@@ -417,13 +476,13 @@ void LuaEntitySAO::step(float dtime, bool send_recommended)
 		float move_d = m_base_position.getDistanceFrom(m_last_sent_position);
 		move_d += m_last_sent_move_precision;
 		float vel_d = m_velocity.getDistanceFrom(m_last_sent_velocity);
-		if(move_d > minchange || vel_d > minchange ||
-				fabs(m_yaw - m_last_sent_yaw) > 1.0){
+		if (move_d > minchange || vel_d > minchange ||
+				std::fabs(m_yaw - m_last_sent_yaw) > 1.0) {
 			sendPosition(true, false);
 		}
 	}
 
-	if(m_armor_groups_sent == false){
+	if (!m_armor_groups_sent) {
 		m_armor_groups_sent = true;
 		std::string str = gob_cmd_update_armor_groups(
 				m_armor_groups);
@@ -432,7 +491,7 @@ void LuaEntitySAO::step(float dtime, bool send_recommended)
 		m_messages_out.push(aom);
 	}
 
-	if(m_animation_sent == false){
+	if (!m_animation_sent) {
 		m_animation_sent = true;
 		std::string str = gob_cmd_update_animation(
 			m_animation_range, m_animation_speed, m_animation_blend, m_animation_loop);
@@ -441,7 +500,15 @@ void LuaEntitySAO::step(float dtime, bool send_recommended)
 		m_messages_out.push(aom);
 	}
 
-	if(m_bone_position_sent == false){
+	if (!m_animation_speed_sent) {
+		m_animation_speed_sent = true;
+		std::string str = gob_cmd_update_animation_speed(m_animation_speed);
+		// create message and add to list
+		ActiveObjectMessage aom(getId(), true, str);
+		m_messages_out.push(aom);
+	}
+
+	if (!m_bone_position_sent) {
 		m_bone_position_sent = true;
 		for (std::unordered_map<std::string, core::vector2d<v3f>>::const_iterator
 				ii = m_bone_position.begin(); ii != m_bone_position.end(); ++ii){
@@ -453,7 +520,7 @@ void LuaEntitySAO::step(float dtime, bool send_recommended)
 		}
 	}
 
-	if(m_attachment_sent == false){
+	if (!m_attachment_sent) {
 		m_attachment_sent = true;
 		std::string str = gob_cmd_update_attachment(m_attachment_parent_id, m_attachment_bone, m_attachment_position, m_attachment_rotation);
 		// create message and add to list
@@ -537,15 +604,11 @@ int LuaEntitySAO::punch(v3f dir,
 		ServerActiveObject *puncher,
 		float time_from_last_punch)
 {
-	if (!m_registered){
+	if (!m_registered) {
 		// Delete unknown LuaEntities when punched
-		m_removed = true;
+		m_pending_removal = true;
 		return 0;
 	}
-
-	// It's best that attachments cannot be punched
-	if (isAttached())
-		return 0;
 
 	ItemStack *punchitem = NULL;
 	ItemStack punchitem_static;
@@ -565,7 +628,8 @@ int LuaEntitySAO::punch(v3f dir,
 
 	if (!damage_handled) {
 		if (result.did_punch) {
-			setHP(getHP() - result.damage);
+			setHP(getHP() - result.damage,
+				PlayerHPChangeReason(PlayerHPChangeReason::SET_HP));
 
 			if (result.damage > 0) {
 				std::string punchername = puncher ? puncher->getDescription() : "nil";
@@ -582,10 +646,12 @@ int LuaEntitySAO::punch(v3f dir,
 		}
 	}
 
-	if (getHP() == 0)
-		m_removed = true;
-
-
+	if (getHP() == 0 && !isGone()) {
+		m_pending_removal = true;
+		clearParentAttachment();
+		clearChildAttachments();
+		m_env->getScriptIface()->luaentity_on_death(m_id, puncher);
+	}
 
 	return result.wear;
 }
@@ -594,9 +660,7 @@ void LuaEntitySAO::rightClick(ServerActiveObject *clicker)
 {
 	if (!m_registered)
 		return;
-	// It's best that attachments cannot be clicked
-	if (isAttached())
-		return;
+
 	m_env->getScriptIface()->luaentity_Rightclick(m_id, clicker);
 }
 
@@ -605,6 +669,7 @@ void LuaEntitySAO::setPos(const v3f &pos)
 	if(isAttached())
 		return;
 	m_base_position = pos;
+	m_env->updateActiveObject(this);
 	sendPosition(false, true);
 }
 
@@ -613,6 +678,7 @@ void LuaEntitySAO::moveTo(v3f pos, bool continuous)
 	if(isAttached())
 		return;
 	m_base_position = pos;
+	m_env->updateActiveObject(this);
 	if(!continuous)
 		sendPosition(true, true);
 }
@@ -633,9 +699,10 @@ std::string LuaEntitySAO::getDescription()
 	return os.str();
 }
 
-void LuaEntitySAO::setHP(s16 hp)
+void LuaEntitySAO::setHP(s16 hp, const PlayerHPChangeReason &reason)
 {
-	if(hp < 0) hp = 0;
+	if (hp < 0)
+		hp = 0;
 	m_hp = hp;
 }
 
@@ -751,12 +818,12 @@ bool LuaEntitySAO::getCollisionBox(aabb3f *toset) const
 
 bool LuaEntitySAO::getSelectionBox(aabb3f *toset) const
 {
-	if (!m_prop.is_visible) {
+	if (!m_prop.is_visible || !m_prop.pointable) {
 		return false;
 	}
 
-	toset->MinEdge = m_prop.collisionbox.MinEdge * BS;
-	toset->MaxEdge = m_prop.collisionbox.MaxEdge * BS;
+	toset->MinEdge = m_prop.selectionbox.MinEdge * BS;
+	toset->MaxEdge = m_prop.selectionbox.MaxEdge * BS;
 
 	return true;
 }
@@ -772,7 +839,7 @@ bool LuaEntitySAO::collideWithObjects() const
 
 // No prototype, PlayerSAO does not need to be deserialized
 
-PlayerSAO::PlayerSAO(ServerEnvironment *env_, RemotePlayer *player_, u16 peer_id_,
+PlayerSAO::PlayerSAO(ServerEnvironment *env_, RemotePlayer *player_, session_t peer_id_,
 		bool is_singleplayer):
 	UnitSAO(env_, v3f(0,0,0)),
 	m_player(player_),
@@ -781,23 +848,32 @@ PlayerSAO::PlayerSAO(ServerEnvironment *env_, RemotePlayer *player_, u16 peer_id
 {
 	assert(m_peer_id != 0);	// pre-condition
 
-	m_prop.hp_max = PLAYER_MAX_HP;
+	m_prop.hp_max = PLAYER_MAX_HP_DEFAULT;
+	m_prop.breath_max = PLAYER_MAX_BREATH_DEFAULT;
 	m_prop.physical = false;
 	m_prop.weight = 75;
 	m_prop.collisionbox = aabb3f(-0.3f, 0.0f, -0.3f, 0.3f, 1.77f, 0.3f);
-	// start of default appearance, this should be overwritten by LUA
+	m_prop.selectionbox = aabb3f(-0.3f, 0.0f, -0.3f, 0.3f, 1.77f, 0.3f);
+	m_prop.pointable = true;
+	// Start of default appearance, this should be overwritten by Lua
 	m_prop.visual = "upright_sprite";
 	m_prop.visual_size = v2f(1, 2);
 	m_prop.textures.clear();
-	m_prop.textures.push_back("player.png");
-	m_prop.textures.push_back("player_back.png");
+	m_prop.textures.emplace_back("player.png");
+	m_prop.textures.emplace_back("player_back.png");
 	m_prop.colors.clear();
-	m_prop.colors.push_back(video::SColor(255, 255, 255, 255));
+	m_prop.colors.emplace_back(255, 255, 255, 255);
 	m_prop.spritediv = v2s16(1,1);
-	// end of default appearance
+	m_prop.eye_height = 1.625f;
+	// End of default appearance
 	m_prop.is_visible = true;
+	m_prop.backface_culling = false;
 	m_prop.makes_footstep_sound = true;
-	m_hp = PLAYER_MAX_HP;
+	m_prop.stepheight = PLAYER_DEFAULT_STEPHEIGHT * BS;
+	m_hp = m_prop.hp_max;
+	m_breath = m_prop.breath_max;
+	// Disable zoom in survival mode using a value of 0
+	m_prop.zoom_fov = g_settings->getBool("creative_mode") ? 15.0f : 0.0f;
 }
 
 PlayerSAO::~PlayerSAO()
@@ -816,7 +892,7 @@ void PlayerSAO::finalize(RemotePlayer *player, const std::set<std::string> &priv
 
 v3f PlayerSAO::getEyeOffset() const
 {
-	return v3f(0, BS * 1.625f, 0);
+	return v3f(0, BS * m_prop.eye_height, 0);
 }
 
 std::string PlayerSAO::getDescription()
@@ -830,7 +906,7 @@ void PlayerSAO::addedToEnvironment(u32 dtime_s)
 	ServerActiveObject::addedToEnvironment(dtime_s);
 	ServerActiveObject::setBasePosition(m_base_position);
 	m_player->setPlayerSAO(this);
-	m_player->peer_id = m_peer_id;
+	m_player->setPeerId(m_peer_id);
 	m_last_good_position = m_base_position;
 }
 
@@ -840,9 +916,8 @@ void PlayerSAO::removingFromEnvironment()
 	ServerActiveObject::removingFromEnvironment();
 	if (m_player->getPlayerSAO() == this) {
 		unlinkPlayerSessionAndSave();
-		for (std::unordered_set<u32>::iterator it = m_attached_particle_spawners.begin();
-			it != m_attached_particle_spawners.end(); ++it) {
-			m_env->deleteParticleSpawner(*it, false);
+		for (u32 attached_particle_spawner : m_attached_particle_spawners) {
+			m_env->deleteParticleSpawner(attached_particle_spawner, false);
 		}
 	}
 }
@@ -894,16 +969,16 @@ std::string PlayerSAO::getClientInitializationData(u16 protocol_version)
 	return os.str();
 }
 
-void PlayerSAO::getStaticData(std::string *result) const
+void PlayerSAO::getStaticData(std::string * result) const
 {
 	FATAL_ERROR("Deprecated function");
 }
 
 void PlayerSAO::step(float dtime, bool send_recommended)
 {
-	if (m_drowning_interval.step(dtime, 2.0)) {
-		// get head position
-		v3s16 p = floatToInt(m_base_position + v3f(0, BS * 1.6, 0), BS);
+	if (m_drowning_interval.step(dtime, 2.0f)) {
+		// Get nose/mouth position, approximate with eye position
+		v3s16 p = floatToInt(getEyePosition(), BS);
 		MapNode n = m_env->getMap().getNodeNoEx(p);
 		const ContentFeatures &c = m_env->getGameDef()->ndef()->get(n);
 		// If node generates drown
@@ -913,43 +988,50 @@ void PlayerSAO::step(float dtime, bool send_recommended)
 
 			// No more breath, damage player
 			if (m_breath == 0) {
-				setHP(m_hp - c.drowning);
-				m_env->getGameDef()->SendPlayerHPOrDie(this);
+				PlayerHPChangeReason reason(PlayerHPChangeReason::DROWNING);
+				setHP(m_hp - c.drowning, reason);
+				m_env->getGameDef()->SendPlayerHPOrDie(this, reason);
 			}
 		}
 	}
 
-	if (m_breathing_interval.step(dtime, 0.5)) {
-		// get head position
-		v3s16 p = floatToInt(m_base_position + v3f(0, BS * 1.6, 0), BS);
+	if (m_breathing_interval.step(dtime, 0.5f)) {
+		// Get nose/mouth position, approximate with eye position
+		v3s16 p = floatToInt(getEyePosition(), BS);
 		MapNode n = m_env->getMap().getNodeNoEx(p);
 		const ContentFeatures &c = m_env->getGameDef()->ndef()->get(n);
-		// If player is alive & no drowning, breath
-		if (m_hp > 0 && m_breath < PLAYER_MAX_BREATH && c.drowning == 0)
+		// If player is alive & no drowning, breathe
+		if (m_hp > 0 && m_breath < m_prop.breath_max && c.drowning == 0)
 			setBreath(m_breath + 1);
 	}
 
-	if (m_node_hurt_interval.step(dtime, 1.0)) {
-		// Feet, middle and head
-		v3s16 p1 = floatToInt(m_base_position + v3f(0, BS*0.1, 0), BS);
-		MapNode n1 = m_env->getMap().getNodeNoEx(p1);
-		v3s16 p2 = floatToInt(m_base_position + v3f(0, BS*0.8, 0), BS);
-		MapNode n2 = m_env->getMap().getNodeNoEx(p2);
-		v3s16 p3 = floatToInt(m_base_position + v3f(0, BS*1.6, 0), BS);
-		MapNode n3 = m_env->getMap().getNodeNoEx(p3);
-
+	if (m_node_hurt_interval.step(dtime, 1.0f)) {
 		u32 damage_per_second = 0;
-		damage_per_second = MYMAX(damage_per_second,
-			m_env->getGameDef()->ndef()->get(n1).damage_per_second);
-		damage_per_second = MYMAX(damage_per_second,
-			m_env->getGameDef()->ndef()->get(n2).damage_per_second);
-		damage_per_second = MYMAX(damage_per_second,
-			m_env->getGameDef()->ndef()->get(n3).damage_per_second);
+		// Lowest and highest damage points are 0.1 within collisionbox
+		float dam_top = m_prop.collisionbox.MaxEdge.Y - 0.1f;
+
+		// Sequence of damage points, starting 0.1 above feet and progressing
+		// upwards in 1 node intervals, stopping below top damage point.
+		for (float dam_height = 0.1f; dam_height < dam_top; dam_height++) {
+			v3s16 p = floatToInt(m_base_position +
+				v3f(0.0f, dam_height * BS, 0.0f), BS);
+			MapNode n = m_env->getMap().getNodeNoEx(p);
+			damage_per_second = std::max(damage_per_second,
+				m_env->getGameDef()->ndef()->get(n).damage_per_second);
+		}
+
+		// Top damage point
+		v3s16 ptop = floatToInt(m_base_position +
+			v3f(0.0f, dam_top * BS, 0.0f), BS);
+		MapNode ntop = m_env->getMap().getNodeNoEx(ptop);
+		damage_per_second = std::max(damage_per_second,
+			m_env->getGameDef()->ndef()->get(ntop).damage_per_second);
 
 		if (damage_per_second != 0 && m_hp > 0) {
 			s16 newhp = ((s32) damage_per_second > m_hp ? 0 : m_hp - damage_per_second);
-			setHP(newhp);
-			m_env->getGameDef()->SendPlayerHPOrDie(this);
+			PlayerHPChangeReason reason(PlayerHPChangeReason::NODE_DAMAGE);
+			setHP(newhp, reason);
+			m_env->getGameDef()->SendPlayerHPOrDie(this, reason);
 		}
 	}
 
@@ -962,12 +1044,11 @@ void PlayerSAO::step(float dtime, bool send_recommended)
 	}
 
 	// If attached, check that our parent is still there. If it isn't, detach.
-	if(m_attachment_parent_id && !isAttached())
-	{
+	if (m_attachment_parent_id && !isAttached()) {
 		m_attachment_parent_id = 0;
 		m_attachment_bone = "";
-		m_attachment_position = v3f(0,0,0);
-		m_attachment_rotation = v3f(0,0,0);
+		m_attachment_position = v3f(0.0f, 0.0f, 0.0f);
+		m_attachment_rotation = v3f(0.0f, 0.0f, 0.0f);
 		setBasePosition(m_last_good_position);
 		m_env->getGameDef()->SendMovePlayer(m_peer_id);
 	}
@@ -975,8 +1056,8 @@ void PlayerSAO::step(float dtime, bool send_recommended)
 	//dstream<<"PlayerSAO::step: dtime: "<<dtime<<std::endl;
 
 	// Set lag pool maximums based on estimated lag
-	const float LAG_POOL_MIN = 5.0;
-	float lag_pool_max = m_env->getMaxLagEstimate() * 2.0;
+	const float LAG_POOL_MIN = 5.0f;
+	float lag_pool_max = m_env->getMaxLagEstimate() * 2.0f;
 	if(lag_pool_max < LAG_POOL_MIN)
 		lag_pool_max = LAG_POOL_MIN;
 	m_dig_pool.setMax(lag_pool_max);
@@ -989,8 +1070,10 @@ void PlayerSAO::step(float dtime, bool send_recommended)
 	m_time_from_last_punch += dtime;
 	m_nocheat_dig_time += dtime;
 
-	// Each frame, parent position is copied if the object is attached, otherwise it's calculated normally
-	// If the object gets detached this comes into effect automatically from the last known origin
+	// Each frame, parent position is copied if the object is attached,
+	// otherwise it's calculated normally.
+	// If the object gets detached this comes into effect automatically from
+	// the last known origin.
 	if (isAttached()) {
 		v3f pos = m_env->getActiveObject(m_attachment_parent_id)->getBasePosition();
 		m_last_good_position = pos;
@@ -1000,20 +1083,21 @@ void PlayerSAO::step(float dtime, bool send_recommended)
 	if (!send_recommended)
 		return;
 
-	// If the object is attached client-side, don't waste bandwidth sending its position to clients
-	if(m_position_not_sent && !isAttached())
-	{
+	// If the object is attached client-side, don't waste bandwidth sending its
+	// position to clients.
+	if (m_position_not_sent && !isAttached()) {
 		m_position_not_sent = false;
 		float update_interval = m_env->getSendRecommendedInterval();
 		v3f pos;
-		if(isAttached()) // Just in case we ever do send attachment position too
+		if (isAttached()) // Just in case we ever do send attachment position too
 			pos = m_env->getActiveObject(m_attachment_parent_id)->getBasePosition();
 		else
 			pos = m_base_position;
+
 		std::string str = gob_cmd_update_position(
 			pos,
-			v3f(0,0,0),
-			v3f(0,0,0),
+			v3f(0.0f, 0.0f, 0.0f),
+			v3f(0.0f, 0.0f, 0.0f),
 			m_yaw,
 			true,
 			false,
@@ -1065,7 +1149,7 @@ void PlayerSAO::step(float dtime, bool send_recommended)
 		}
 	}
 
-	if (!m_attachment_sent){
+	if (!m_attachment_sent) {
 		m_attachment_sent = true;
 		std::string str = gob_cmd_update_attachment(m_attachment_parent_id,
 				m_attachment_bone, m_attachment_position, m_attachment_rotation);
@@ -1082,7 +1166,12 @@ void PlayerSAO::setBasePosition(const v3f &position)
 
 	// This needs to be ran for attachments too
 	ServerActiveObject::setBasePosition(position);
-	m_position_not_sent = true;
+
+	// Updating is not wanted/required for player migration
+	if (m_env) {
+		m_env->updateActiveObject(this);
+		m_position_not_sent = true;
+	}
 }
 
 void PlayerSAO::setPos(const v3f &pos)
@@ -1160,15 +1249,11 @@ int PlayerSAO::punch(v3f dir,
 	ServerActiveObject *puncher,
 	float time_from_last_punch)
 {
-	// It's best that attachments cannot be punched
-	if (isAttached())
-		return 0;
-
 	if (!toolcap)
 		return 0;
 
 	// No effect if PvP disabled
-	if (g_settings->getBool("enable_pvp") == false) {
+	if (!g_settings->getBool("enable_pvp")) {
 		if (puncher->getType() == ACTIVEOBJECT_TYPE_PLAYER) {
 			std::string str = gob_cmd_punched(0, getHP());
 			// create message and add to list
@@ -1193,7 +1278,8 @@ int PlayerSAO::punch(v3f dir,
 				hitparams.hp);
 
 	if (!damage_handled) {
-		setHP(getHP() - hitparams.hp);
+		setHP(getHP() - hitparams.hp,
+				PlayerHPChangeReason(PlayerHPChangeReason::PLAYER_PUNCH, puncher));
 	} else { // override client prediction
 		if (puncher->getType() == ACTIVEOBJECT_TYPE_PLAYER) {
 			std::string str = gob_cmd_punched(0, getHP());
@@ -1223,19 +1309,19 @@ s16 PlayerSAO::readDamage()
 	return damage;
 }
 
-void PlayerSAO::setHP(s16 hp)
+void PlayerSAO::setHP(s16 hp, const PlayerHPChangeReason &reason)
 {
 	s16 oldhp = m_hp;
 
-	s16 hp_change = m_env->getScriptIface()->on_player_hpchange(this, hp - oldhp);
+	s16 hp_change = m_env->getScriptIface()->on_player_hpchange(this, hp - oldhp, reason);
 	if (hp_change == 0)
 		return;
 	hp = oldhp + hp_change;
 
 	if (hp < 0)
 		hp = 0;
-	else if (hp > PLAYER_MAX_HP)
-		hp = PLAYER_MAX_HP;
+	else if (hp > m_prop.hp_max)
+		hp = m_prop.hp_max;
 
 	if (hp < oldhp && !g_settings->getBool("enable_damage")) {
 		return;
@@ -1256,7 +1342,7 @@ void PlayerSAO::setBreath(const u16 breath, bool send)
 	if (m_player && breath != m_breath)
 		m_player->setDirty(true);
 
-	m_breath = MYMIN(breath, PLAYER_MAX_BREATH);
+	m_breath = MYMIN(breath, m_prop.breath_max);
 
 	if (send)
 		m_env->getGameDef()->SendPlayerBreath(this);
@@ -1333,17 +1419,16 @@ void PlayerSAO::setWieldIndex(int i)
 	}
 }
 
-// Erase the peer id and make the object for removal
 void PlayerSAO::disconnected()
 {
 	m_peer_id = 0;
-	m_removed = true;
+	m_pending_removal = true;
 }
 
 void PlayerSAO::unlinkPlayerSessionAndSave()
 {
 	assert(m_player->getPlayerSAO() == this);
-	m_player->peer_id = 0;
+	m_player->setPeerId(PEER_ID_INEXISTENT);
 	m_env->savePlayer(m_player);
 	m_player->setPlayerSAO(NULL);
 	m_env->removePlayer(m_player);
@@ -1374,26 +1459,38 @@ bool PlayerSAO::checkMovementCheat()
 		too, and much more lightweight.
 	*/
 
-	float player_max_speed = 0;
+	float player_max_walk = 0; // horizontal movement
+	float player_max_jump = 0; // vertical upwards movement
 
-	if (m_privs.count("fast") != 0) {
-		// Fast speed
-		player_max_speed = m_player->movement_speed_fast * m_physics_override_speed;
-	} else {
-		// Normal speed
-		player_max_speed = m_player->movement_speed_walk * m_physics_override_speed;
-	}
-	// Tolerance. The lag pool does this a bit.
-	//player_max_speed *= 2.5;
+	if (m_privs.count("fast") != 0)
+		player_max_walk = m_player->movement_speed_fast; // Fast speed
+	else
+		player_max_walk = m_player->movement_speed_walk; // Normal speed
+	player_max_walk *= m_physics_override_speed;
+	player_max_jump = m_player->movement_speed_jump * m_physics_override_jump;
+	// FIXME: Bouncy nodes cause practically unbound increase in Y speed,
+	//        until this can be verified correctly, tolerate higher jumping speeds
+	player_max_jump *= 2.0;
+
+	// Don't divide by zero!
+	if (player_max_walk < 0.0001f)
+		player_max_walk = 0.0001f;
+	if (player_max_jump < 0.0001f)
+		player_max_jump = 0.0001f;
 
 	v3f diff = (m_base_position - m_last_good_position);
 	float d_vert = diff.Y;
 	diff.Y = 0;
 	float d_horiz = diff.getLength();
-	float required_time = d_horiz / player_max_speed;
+	float required_time = d_horiz / player_max_walk;
 
-	if (d_vert > 0 && d_vert / player_max_speed > required_time)
-		required_time = d_vert / player_max_speed; // Moving upwards
+	// FIXME: Checking downwards movement is not easily possible currently,
+	//        the server could calculate speed differences to examine the gravity
+	if (d_vert > 0) {
+		// In certain cases (water, ladders) walking speed is applied vertically
+		float s = MYMAX(player_max_jump, player_max_walk);
+		required_time = MYMAX(required_time, d_vert / s);
+	}
 
 	if (m_move_pool.grab(required_time)) {
 		m_last_good_position = m_base_position;
@@ -1425,11 +1522,17 @@ bool PlayerSAO::getCollisionBox(aabb3f *toset) const
 
 bool PlayerSAO::getSelectionBox(aabb3f *toset) const
 {
-	if (!m_prop.is_visible) {
+	if (!m_prop.is_visible || !m_prop.pointable) {
 		return false;
 	}
 
-	getCollisionBox(toset);
+	toset->MinEdge = m_prop.selectionbox.MinEdge * BS;
+	toset->MaxEdge = m_prop.selectionbox.MaxEdge * BS;
 
 	return true;
+}
+
+float PlayerSAO::getZoomFOV() const
+{
+	return m_prop.zoom_fov;
 }

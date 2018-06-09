@@ -26,9 +26,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "client/tile.h"
 #include "mesh.h"
 #include <IMeshManipulator.h>
+#include "client/meshgen/collector.h"
 #include "client/renderingengine.h"
 #include "client.h"
-#include "log.h"
 #include "noise.h"
 
 // Distance of light extrapolation (for oversized nodes)
@@ -78,35 +78,43 @@ void MapblockMeshGenerator::useTile(int index, u8 set_flags, u8 reset_flags, boo
 	if (special)
 		getSpecialTile(index, &tile, p == data->m_crack_pos_relative);
 	else
-		getNodeTileN(n, p, index, data, tile);
+		getTile(index, &tile);
 	if (!data->m_smooth_lighting)
 		color = encode_light(light, f->light_source);
-	for (int layer = 0; layer < MAX_TILE_LAYERS; layer++) {
-		tile.layers[layer].material_flags |= set_flags;
-		tile.layers[layer].material_flags &= ~reset_flags;
+
+	for (auto &layer : tile.layers) {
+		layer.material_flags |= set_flags;
+		layer.material_flags &= ~reset_flags;
 	}
 }
 
+// Returns a tile, ready for use, non-rotated.
+void MapblockMeshGenerator::getTile(int index, TileSpec *tile)
+{
+	getNodeTileN(n, p, index, data, *tile);
+}
+
+// Returns a tile, ready for use, rotated according to the node facedir.
 void MapblockMeshGenerator::getTile(v3s16 direction, TileSpec *tile)
 {
 	getNodeTile(n, p, direction, data, *tile);
 }
 
-/*!
- * Returns the i-th special tile for a map node.
- */
+// Returns a special tile, ready for use, non-rotated.
 void MapblockMeshGenerator::getSpecialTile(int index, TileSpec *tile, bool apply_crack)
 {
 	*tile = f->special_tiles[index];
-	TileLayer *top_layer = NULL;
-	for (int layernum = 0; layernum < MAX_TILE_LAYERS; layernum++) {
-		TileLayer *layer = &tile->layers[layernum];
+	TileLayer *top_layer = nullptr;
+
+	for (auto &layernum : tile->layers) {
+		TileLayer *layer = &layernum;
 		if (layer->texture_id == 0)
 			continue;
 		top_layer = layer;
 		if (!layer->has_color)
 			n.getColor(*f, &layer->color);
 	}
+
 	if (apply_crack)
 		top_layer->material_flags |= MATERIAL_FLAG_CRACK;
 }
@@ -144,7 +152,7 @@ void MapblockMeshGenerator::drawQuad(v3f *coords, const v3s16 &normal,
 //              the faces in the list is up-down-right-left-back-front
 //              (compatible with ContentFeatures).
 void MapblockMeshGenerator::drawCuboid(const aabb3f &box,
-	TileSpec *tiles, int tilecount, const u16 *lights, const f32 *txc)
+	TileSpec *tiles, int tilecount, const LightInfo *lights, const f32 *txc)
 {
 	assert(tilecount >= 1 && tilecount <= 6); // pre-condition
 
@@ -256,10 +264,12 @@ void MapblockMeshGenerator::drawCuboid(const aabb3f &box,
 
 	if (data->m_smooth_lighting) {
 		for (int j = 0; j < 24; ++j) {
-			vertices[j].Color = encode_light(lights[light_indices[j]],
+			video::S3DVertex &vertex = vertices[j];
+			vertex.Color = encode_light(
+				lights[light_indices[j]].getPair(MYMAX(0.0f, vertex.Normal.Y)),
 				f->light_source);
 			if (!f->light_source)
-				applyFacesShading(vertices[j].Color, vertices[j].Normal);
+				applyFacesShading(vertex.Color, vertex.Normal);
 		}
 	}
 
@@ -273,32 +283,45 @@ void MapblockMeshGenerator::drawCuboid(const aabb3f &box,
 // Gets the base lighting values for a node
 void MapblockMeshGenerator::getSmoothLightFrame()
 {
+	for (int k = 0; k < 8; ++k)
+		frame.sunlight[k] = false;
 	for (int k = 0; k < 8; ++k) {
-		u16 light = getSmoothLight(blockpos_nodes + p, light_dirs[k], data);
-		frame.lightsA[k] = light & 0xff;
-		frame.lightsB[k] = light >> 8;
+		LightPair light(getSmoothLightTransparent(blockpos_nodes + p, light_dirs[k], data));
+		frame.lightsDay[k] = light.lightDay;
+		frame.lightsNight[k] = light.lightNight;
+		// If there is direct sunlight and no ambient occlusion at some corner,
+		// mark the vertical edge (top and bottom corners) containing it.
+		if (light.lightDay == 255) {
+			frame.sunlight[k] = true;
+			frame.sunlight[k ^ 2] = true;
+		}
 	}
 }
 
 // Calculates vertex light level
 //  vertex_pos - vertex position in the node (coordinates are clamped to [0.0, 1.0] or so)
-u16 MapblockMeshGenerator::blendLight(const v3f &vertex_pos)
+LightInfo MapblockMeshGenerator::blendLight(const v3f &vertex_pos)
 {
+	// Light levels at (logical) node corners are known. Here,
+	// trilinear interpolation is used to calculate light level
+	// at a given point in the node.
 	f32 x = core::clamp(vertex_pos.X / BS + 0.5, 0.0 - SMOOTH_LIGHTING_OVERSIZE, 1.0 + SMOOTH_LIGHTING_OVERSIZE);
 	f32 y = core::clamp(vertex_pos.Y / BS + 0.5, 0.0 - SMOOTH_LIGHTING_OVERSIZE, 1.0 + SMOOTH_LIGHTING_OVERSIZE);
 	f32 z = core::clamp(vertex_pos.Z / BS + 0.5, 0.0 - SMOOTH_LIGHTING_OVERSIZE, 1.0 + SMOOTH_LIGHTING_OVERSIZE);
-	f32 lightA = 0.0;
-	f32 lightB = 0.0;
+	f32 lightDay = 0.0; // daylight
+	f32 lightNight = 0.0;
+	f32 lightBoosted = 0.0; // daylight + direct sunlight, if any
 	for (int k = 0; k < 8; ++k) {
 		f32 dx = (k & 4) ? x : 1 - x;
 		f32 dy = (k & 2) ? y : 1 - y;
 		f32 dz = (k & 1) ? z : 1 - z;
-		lightA += dx * dy * dz * frame.lightsA[k];
-		lightB += dx * dy * dz * frame.lightsB[k];
+		// Use direct sunlight (255), if any; use daylight otherwise.
+		f32 light_boosted = frame.sunlight[k] ? 255 : frame.lightsDay[k];
+		lightDay += dx * dy * dz * frame.lightsDay[k];
+		lightNight += dx * dy * dz * frame.lightsNight[k];
+		lightBoosted += dx * dy * dz * light_boosted;
 	}
-	return
-		core::clamp(core::round32(lightA), 0, 255) |
-		core::clamp(core::round32(lightB), 0, 255) << 8;
+	return LightInfo{lightDay, lightNight, lightBoosted};
 }
 
 // Calculates vertex color to be used in mapblock mesh
@@ -306,14 +329,15 @@ u16 MapblockMeshGenerator::blendLight(const v3f &vertex_pos)
 //  tile_color - node's tile color
 video::SColor MapblockMeshGenerator::blendLightColor(const v3f &vertex_pos)
 {
-	u16 light = blendLight(vertex_pos);
-	return encode_light(light, f->light_source);
+	LightInfo light = blendLight(vertex_pos);
+	return encode_light(light.getPair(), f->light_source);
 }
 
 video::SColor MapblockMeshGenerator::blendLightColor(const v3f &vertex_pos,
 	const v3f &vertex_normal)
 {
-	video::SColor color = blendLightColor(vertex_pos);
+	LightInfo light = blendLight(vertex_pos);
+	video::SColor color = encode_light(light.getPair(MYMAX(0.0f, vertex_normal.Y)), f->light_source);
 	if (!f->light_source)
 		applyFacesShading(color, vertex_normal);
 	return color;
@@ -360,7 +384,7 @@ void MapblockMeshGenerator::drawAutoLightedCuboid(aabb3f box, const f32 *txc,
 		tile_count = 1;
 	}
 	if (data->m_smooth_lighting) {
-		u16 lights[8];
+		LightInfo lights[8];
 		for (int j = 0; j < 8; ++j) {
 			v3f d;
 			d.X = (j & 4) ? dx2 : dx1;
@@ -370,7 +394,7 @@ void MapblockMeshGenerator::drawAutoLightedCuboid(aabb3f box, const f32 *txc,
 		}
 		drawCuboid(box, tiles, tile_count, lights, txc);
 	} else {
-		drawCuboid(box, tiles, tile_count, NULL, txc);
+		drawCuboid(box, tiles, tile_count, nullptr, txc);
 	}
 }
 
@@ -380,9 +404,16 @@ void MapblockMeshGenerator::prepareLiquidNodeDrawing()
 	getSpecialTile(1, &tile_liquid);
 
 	MapNode ntop = data->m_vmanip.getNodeNoEx(blockpos_nodes + v3s16(p.X, p.Y + 1, p.Z));
+	MapNode nbottom = data->m_vmanip.getNodeNoEx(blockpos_nodes + v3s16(p.X, p.Y - 1, p.Z));
 	c_flowing = nodedef->getId(f->liquid_alternative_flowing);
 	c_source = nodedef->getId(f->liquid_alternative_source);
 	top_is_same_liquid = (ntop.getContent() == c_flowing) || (ntop.getContent() == c_source);
+	draw_liquid_bottom = (nbottom.getContent() != c_flowing) && (nbottom.getContent() != c_source);
+	if (draw_liquid_bottom) {
+		const ContentFeatures &f2 = nodedef->get(nbottom.getContent());
+		if (f2.solidness > 1)
+			draw_liquid_bottom = false;
+	}
 
 	if (data->m_smooth_lighting)
 		return; // don't need to pre-compute anything in this case
@@ -390,11 +421,11 @@ void MapblockMeshGenerator::prepareLiquidNodeDrawing()
 	if (f->light_source != 0) {
 		// If this liquid emits light and doesn't contain light, draw
 		// it at what it emits, for an increased effect
-		light = decode_light(f->light_source);
-		light = light | (light << 8);
+		u8 e = decode_light(f->light_source);
+		light = LightPair(std::max(e, light.lightDay), std::max(e, light.lightNight));
 	} else if (nodedef->get(ntop).param_type == CPT_LIGHT) {
 		// Otherwise, use the light of the node on top if possible
-		light = getInteriorLight(ntop, 0, nodedef);
+		light = LightPair(getInteriorLight(ntop, 0, nodedef));
 	}
 
 	color_liquid_top = encode_light(light, f->light_source);
@@ -502,8 +533,8 @@ void MapblockMeshGenerator::drawLiquidSides()
 		{1, 0},
 		{0, 0}
 	};
-	for (int i = 0; i < 4; i++) {
-		const LiquidFaceDesc &face = base_faces[i];
+
+	for (const auto &face : base_faces) {
 		const NeighborData &neighbor = liquid_neighbors[face.dir.Z + 1][face.dir.X + 1];
 
 		// No face between nodes of the same liquid, unless there is node
@@ -580,12 +611,30 @@ void MapblockMeshGenerator::drawLiquidTop()
 	tcoord_translate.X -= floor(tcoord_translate.X);
 	tcoord_translate.Y -= floor(tcoord_translate.Y);
 
-	for (int i = 0; i < 4; i++) {
-		vertices[i].TCoords.rotateBy(tcoord_angle, tcoord_center);
-		vertices[i].TCoords += tcoord_translate;
+	for (video::S3DVertex &vertex : vertices) {
+		vertex.TCoords.rotateBy(tcoord_angle, tcoord_center);
+		vertex.TCoords += tcoord_translate;
 	}
 
 	std::swap(vertices[0].TCoords, vertices[2].TCoords);
+
+	collector->append(tile_liquid_top, vertices, 4, quad_indices, 6);
+}
+
+void MapblockMeshGenerator::drawLiquidBottom()
+{
+	video::S3DVertex vertices[4] = {
+		video::S3DVertex(-BS / 2, -BS / 2, -BS / 2, 0, 0, 0, color_liquid_top, 0, 0),
+		video::S3DVertex( BS / 2, -BS / 2, -BS / 2, 0, 0, 0, color_liquid_top, 1, 0),
+		video::S3DVertex( BS / 2, -BS / 2,  BS / 2, 0, 0, 0, color_liquid_top, 1, 1),
+		video::S3DVertex(-BS / 2, -BS / 2,  BS / 2, 0, 0, 0, color_liquid_top, 0, 1),
+	};
+
+	for (int i = 0; i < 4; i++) {
+		if (data->m_smooth_lighting)
+			vertices[i].Color = blendLightColor(vertices[i].Pos);
+		vertices[i].Pos += origin;
+	}
 
 	collector->append(tile_liquid_top, vertices, 4, quad_indices, 6);
 }
@@ -598,6 +647,8 @@ void MapblockMeshGenerator::drawLiquidNode()
 	drawLiquidSides();
 	if (!top_is_same_liquid)
 		drawLiquidTop();
+	if (draw_liquid_bottom)
+		drawLiquidBottom();
 }
 
 void MapblockMeshGenerator::drawGlasslikeNode()
@@ -619,14 +670,21 @@ void MapblockMeshGenerator::drawGlasslikeNode()
 			v3f( BS / 2, -BS / 2, -BS / 2),
 			v3f(-BS / 2, -BS / 2, -BS / 2),
 		};
-		for (int i = 0; i < 4; i++) {
+
+		for (v3f &vertex : vertices) {
 			switch (face) {
-				case D6D_ZP: vertices[i].rotateXZBy(180); break;
-				case D6D_YP: vertices[i].rotateYZBy( 90); break;
-				case D6D_XP: vertices[i].rotateXZBy( 90); break;
-				case D6D_ZN: vertices[i].rotateXZBy(  0); break;
-				case D6D_YN: vertices[i].rotateYZBy(-90); break;
-				case D6D_XN: vertices[i].rotateXZBy(-90); break;
+				case D6D_ZP:
+					vertex.rotateXZBy(180); break;
+				case D6D_YP:
+					vertex.rotateYZBy( 90); break;
+				case D6D_XP:
+					vertex.rotateXZBy( 90); break;
+				case D6D_ZN:
+					vertex.rotateXZBy(  0); break;
+				case D6D_YN:
+					vertex.rotateYZBy(-90); break;
+				case D6D_XN:
+					vertex.rotateXZBy(-90); break;
 			}
 		}
 		drawQuad(vertices, dir);
@@ -650,8 +708,8 @@ void MapblockMeshGenerator::drawGlasslikeFramedNode()
 		glass_tiles[4] = tiles[3];
 		glass_tiles[5] = tiles[4];
 	} else {
-		for (int face = 0; face < 6; face++)
-			glass_tiles[face] = tiles[4];
+		for (auto &glass_tile : glass_tiles)
+			glass_tile = tiles[4];
 	}
 
 	u8 param2 = n.getParam2();
@@ -711,7 +769,7 @@ void MapblockMeshGenerator::drawGlasslikeFramedNode()
 			v3s16 n2p = blockpos_nodes + p + g_26dirs[i];
 			MapNode n2 = data->m_vmanip.getNodeNoEx(n2p);
 			content_t n2c = n2.getContent();
-			if (n2c == current || n2c == CONTENT_IGNORE)
+			if (n2c == current)
 				nb[i] = 1;
 		}
 	}
@@ -785,14 +843,21 @@ void MapblockMeshGenerator::drawTorchlikeNode()
 		v3f( size, -size, 0),
 		v3f(-size, -size, 0),
 	};
-	for (int i = 0; i < 4; i++) {
+
+	for (v3f &vertex : vertices) {
 		switch (wall) {
-			case DWM_YP: vertices[i].rotateXZBy(-45); break;
-			case DWM_YN: vertices[i].rotateXZBy( 45); break;
-			case DWM_XP: vertices[i].rotateXZBy(  0); break;
-			case DWM_XN: vertices[i].rotateXZBy(180); break;
-			case DWM_ZP: vertices[i].rotateXZBy( 90); break;
-			case DWM_ZN: vertices[i].rotateXZBy(-90); break;
+			case DWM_YP:
+				vertex.rotateXZBy(-45); break;
+			case DWM_YN:
+				vertex.rotateXZBy( 45); break;
+			case DWM_XP:
+				vertex.rotateXZBy(  0); break;
+			case DWM_XN:
+				vertex.rotateXZBy(180); break;
+			case DWM_ZP:
+				vertex.rotateXZBy( 90); break;
+			case DWM_ZN:
+				vertex.rotateXZBy(-90); break;
 		}
 	}
 	drawQuad(vertices);
@@ -811,14 +876,21 @@ void MapblockMeshGenerator::drawSignlikeNode()
 		v3f(BS / 2 - offset, -size, -size),
 		v3f(BS / 2 - offset, -size,  size),
 	};
-	for (int i = 0; i < 4; i++) {
+
+	for (v3f &vertex : vertices) {
 		switch (wall) {
-			case DWM_YP: vertices[i].rotateXYBy( 90); break;
-			case DWM_YN: vertices[i].rotateXYBy(-90); break;
-			case DWM_XP: vertices[i].rotateXZBy(  0); break;
-			case DWM_XN: vertices[i].rotateXZBy(180); break;
-			case DWM_ZP: vertices[i].rotateXZBy( 90); break;
-			case DWM_ZN: vertices[i].rotateXZBy(-90); break;
+			case DWM_YP:
+				vertex.rotateXYBy( 90); break;
+			case DWM_YN:
+				vertex.rotateXYBy(-90); break;
+			case DWM_XP:
+				vertex.rotateXZBy(  0); break;
+			case DWM_XN:
+				vertex.rotateXZBy(180); break;
+			case DWM_ZP:
+				vertex.rotateXZBy( 90); break;
+			case DWM_ZN:
+				vertex.rotateXZBy(-90); break;
 		}
 	}
 	drawQuad(vertices);
@@ -840,9 +912,10 @@ void MapblockMeshGenerator::drawPlantlikeQuad(float rotation, float quad_offset,
 	int offset_count = offset_top_only ? 2 : 4;
 	for (int i = 0; i < offset_count; i++)
 		vertices[i].Z += quad_offset;
-	for (int i = 0; i < 4; i++) {
-		vertices[i].rotateXZBy(rotation + rotate_degree);
-		vertices[i] += offset;
+
+	for (v3f &vertex : vertices) {
+		vertex.rotateXZBy(rotation + rotate_degree);
+		vertex += offset;
 	}
 	drawQuad(vertices, v3s16(0, 0, 0), plant_height);
 }
@@ -931,7 +1004,7 @@ void MapblockMeshGenerator::drawPlantlikeRootedNode()
 		getSmoothLightFrame();
 	} else {
 		MapNode ntop = data->m_vmanip.getNodeNoEx(blockpos_nodes + p);
-		light = getInteriorLight(ntop, 1, nodedef);
+		light = LightPair(getInteriorLight(ntop, 1, nodedef));
 	}
 	drawPlantlike();
 	p.Y--;
@@ -946,11 +1019,12 @@ void MapblockMeshGenerator::drawFirelikeQuad(float rotation, float opening_angle
 		v3f( scale, -BS / 2, 0),
 		v3f(-scale, -BS / 2, 0),
 	};
-	for (int i = 0; i < 4; i++) {
-		vertices[i].rotateYZBy(opening_angle);
-		vertices[i].Z += offset_h;
-		vertices[i].rotateXZBy(rotation);
-		vertices[i].Y += offset_v;
+
+	for (v3f &vertex : vertices) {
+		vertex.rotateYZBy(opening_angle);
+		vertex.Z += offset_h;
+		vertex.rotateXZBy(rotation);
+		vertex.Y += offset_v;
 	}
 	drawQuad(vertices);
 }
@@ -1006,8 +1080,9 @@ void MapblockMeshGenerator::drawFencelikeNode()
 {
 	useTile(0, 0, 0);
 	TileSpec tile_nocrack = tile;
-	for (int layer = 0; layer < MAX_TILE_LAYERS; layer++)
-		tile_nocrack.layers[layer].material_flags &= ~MATERIAL_FLAG_CRACK;
+
+	for (auto &layer : tile_nocrack.layers)
+		layer.material_flags &= ~MATERIAL_FLAG_CRACK;
 
 	// Put wood the right way around in the posts
 	TileSpec tile_rot = tile;
@@ -1166,8 +1241,8 @@ void MapblockMeshGenerator::drawRaillikeNode()
 		v3f(-size, -size + offset, -size),
 	};
 	if (angle)
-		for (int i = 0; i < 4; i++)
-			vertices[i].rotateXZBy(angle);
+		for (v3f &vertex : vertices)
+			vertex.rotateXZBy(angle);
 	drawQuad(vertices);
 }
 
@@ -1212,8 +1287,8 @@ void MapblockMeshGenerator::drawNodeboxNode()
 
 	std::vector<aabb3f> boxes;
 	n.getNodeBoxes(nodedef, &boxes, neighbors_set);
-	for (std::vector<aabb3f>::iterator i = boxes.begin(); i != boxes.end(); ++i)
-		drawAutoLightedCuboid(*i, NULL, tiles, 6);
+	for (const auto &box : boxes)
+		drawAutoLightedCuboid(box, nullptr, tiles, 6);
 }
 
 void MapblockMeshGenerator::drawMeshNode()
@@ -1230,10 +1305,8 @@ void MapblockMeshGenerator::drawMeshNode()
 		// Convert wallmounted to 6dfacedir.
 		// When cache enabled, it is already converted.
 		facedir = n.getWallMounted(nodedef);
-		if (!enable_mesh_cache) {
-			static const u8 wm_to_6d[6] = {20, 0, 16 + 1, 12 + 3, 8, 4 + 2};
-			facedir = wm_to_6d[facedir];
-		}
+		if (!enable_mesh_cache)
+			facedir = wallmounted_to_facedir[facedir];
 	}
 
 	if (!data->m_smooth_lighting && f->mesh_ptr[facedir]) {
@@ -1301,7 +1374,7 @@ void MapblockMeshGenerator::drawNode()
 	if (data->m_smooth_lighting)
 		getSmoothLightFrame();
 	else
-		light = getInteriorLight(n, 1, nodedef);
+		light = LightPair(getInteriorLight(n, 1, nodedef));
 	switch (f->drawtype) {
 		case NDT_FLOWINGLIQUID:     drawLiquidNode(); break;
 		case NDT_GLASSLIKE:         drawGlasslikeNode(); break;
@@ -1333,4 +1406,12 @@ void MapblockMeshGenerator::generate()
 		f = &nodedef->get(n);
 		drawNode();
 	}
+}
+
+void MapblockMeshGenerator::renderSingle(content_t node)
+{
+	p = {0, 0, 0};
+	n = MapNode(node, 0xff, 0x00);
+	f = &nodedef->get(n);
+	drawNode();
 }

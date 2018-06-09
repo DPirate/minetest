@@ -17,20 +17,21 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#include <chatmessage.h>
+#include "chatmessage.h"
 #include "server.h"
 #include "log.h"
-
 #include "content_sao.h"
 #include "emerge.h"
 #include "mapblock.h"
+#include "modchannels.h"
 #include "nodedef.h"
-#include "player.h"
+#include "remoteplayer.h"
 #include "rollback_interface.h"
 #include "scripting_server.h"
 #include "settings.h"
 #include "tool.h"
 #include "version.h"
+#include "network/connection.h"
 #include "network/networkprotocol.h"
 #include "network/serveropcodes.h"
 #include "util/auth.h"
@@ -141,23 +142,14 @@ void Server::handleCommand_Init(NetworkPacket* pkt)
 
 	client->net_proto_version = net_proto_version;
 
-	// On this handler at least protocol version 25 is required
-	if (net_proto_version < 25 ||
+	if ((g_settings->getBool("strict_protocol_version_checking") &&
+			net_proto_version != LATEST_PROTOCOL_VERSION) ||
 			net_proto_version < SERVER_PROTOCOL_VERSION_MIN ||
 			net_proto_version > SERVER_PROTOCOL_VERSION_MAX) {
 		actionstream << "Server: A mismatched client tried to connect from "
 				<< addr_s << std::endl;
 		DenyAccess(pkt->getPeerId(), SERVER_ACCESSDENIED_WRONG_VERSION);
 		return;
-	}
-
-	if (g_settings->getBool("strict_protocol_version_checking")) {
-		if (net_proto_version != LATEST_PROTOCOL_VERSION) {
-			actionstream << "Server: A mismatched (strict) client tried to "
-					<< "connect from " << addr_s << std::endl;
-			DenyAccess(pkt->getPeerId(), SERVER_ACCESSDENIED_WRONG_VERSION);
-			return;
-		}
 	}
 
 	/*
@@ -174,7 +166,7 @@ void Server::handleCommand_Init(NetworkPacket* pkt)
 		return;
 	}
 
-	if (string_allowed(playerName, PLAYERNAME_ALLOWED_CHARS) == false) {
+	if (!string_allowed(playerName, PLAYERNAME_ALLOWED_CHARS)) {
 		actionstream << "Server: Player with an invalid name "
 				<< "tried to connect from " << addr_s << std::endl;
 		DenyAccess(pkt->getPeerId(), SERVER_ACCESSDENIED_WRONG_CHARS_IN_NAME);
@@ -200,8 +192,7 @@ void Server::handleCommand_Init(NetworkPacket* pkt)
 					<< "tried to connect from " << addr_s << " "
 					<< "but it was disallowed for the following reason: "
 					<< reason << std::endl;
-			DenyAccess(pkt->getPeerId(), SERVER_ACCESSDENIED_CUSTOM_STRING,
-					reason.c_str());
+			DenyAccess(pkt->getPeerId(), SERVER_ACCESSDENIED_CUSTOM_STRING, reason);
 			return;
 		}
 	}
@@ -210,13 +201,10 @@ void Server::handleCommand_Init(NetworkPacket* pkt)
 			<< addr_s << " (peer_id=" << pkt->getPeerId() << ")" << std::endl;
 
 	// Enforce user limit.
-	// Don't enforce for users that have some admin right
-	if (m_clients.getClientIDs(CS_Created).size() >= g_settings->getU16("max_users") &&
-			!checkPriv(playername, "server") &&
-			!checkPriv(playername, "ban") &&
-			!checkPriv(playername, "privs") &&
-			!checkPriv(playername, "password") &&
-			playername != g_settings->get("name")) {
+	// Don't enforce for users that have some admin right or mod permits it.
+	if (m_clients.isUserLimitReached() &&
+			playername != g_settings->get("name") &&
+			!m_script->can_bypass_userlimit(playername, addr_s)) {
 		actionstream << "Server: " << playername << " tried to join from "
 				<< addr_s << ", but there" << " are already max_users="
 				<< g_settings->getU16("max_users") << " players." << std::endl;
@@ -291,320 +279,6 @@ void Server::handleCommand_Init(NetworkPacket* pkt)
 	m_clients.event(pkt->getPeerId(), CSE_Hello);
 }
 
-void Server::handleCommand_Init_Legacy(NetworkPacket* pkt)
-{
-	// [0] u8 SER_FMT_VER_HIGHEST_READ
-	// [1] u8[20] player_name
-	// [21] u8[28] password <--- can be sent without this, from old versions
-
-	if (pkt->getSize() < 1+PLAYERNAME_SIZE)
-		return;
-
-	RemoteClient* client = getClient(pkt->getPeerId(), CS_Created);
-
-	std::string addr_s;
-	try {
-		Address address = getPeerAddress(pkt->getPeerId());
-		addr_s = address.serializeString();
-	}
-	catch (con::PeerNotFoundException &e) {
-		/*
-		 * no peer for this packet found
-		 * most common reason is peer timeout, e.g. peer didn't
-		 * respond for some time, your server was overloaded or
-		 * things like that.
-		 */
-		infostream << "Server::ProcessData(): Canceling: peer "
-				<< pkt->getPeerId() << " not found" << std::endl;
-		return;
-	}
-
-	// If net_proto_version is set, this client has already been handled
-	if (client->getState() > CS_Created) {
-		verbosestream << "Server: Ignoring multiple TOSERVER_INITs from "
-				<< addr_s << " (peer_id=" << pkt->getPeerId() << ")" << std::endl;
-		return;
-	}
-
-	verbosestream << "Server: Got TOSERVER_INIT_LEGACY from " << addr_s << " (peer_id="
-			<< pkt->getPeerId() << ")" << std::endl;
-
-	// Do not allow multiple players in simple singleplayer mode.
-	// This isn't a perfect way to do it, but will suffice for now
-	if (m_simple_singleplayer_mode && m_clients.getClientIDs().size() > 1) {
-		infostream << "Server: Not allowing another client (" << addr_s
-				<< ") to connect in simple singleplayer mode" << std::endl;
-		DenyAccess_Legacy(pkt->getPeerId(), L"Running in simple singleplayer mode.");
-		return;
-	}
-
-	// First byte after command is maximum supported
-	// serialization version
-	u8 client_max;
-
-	*pkt >> client_max;
-
-	u8 our_max = SER_FMT_VER_HIGHEST_READ;
-	// Use the highest version supported by both
-	int deployed = std::min(client_max, our_max);
-	// If it's lower than the lowest supported, give up.
-	if (deployed < SER_FMT_VER_LOWEST_READ)
-		deployed = SER_FMT_VER_INVALID;
-
-	if (deployed == SER_FMT_VER_INVALID) {
-		actionstream << "Server: A mismatched client tried to connect from "
-				<< addr_s << std::endl;
-		infostream<<"Server: Cannot negotiate serialization version with "
-				<< addr_s << std::endl;
-		DenyAccess_Legacy(pkt->getPeerId(), std::wstring(
-				L"Your client's version is not supported.\n"
-				L"Server version is ")
-				+ utf8_to_wide(g_version_string) + L"."
-		);
-		return;
-	}
-
-	client->setPendingSerializationVersion(deployed);
-
-	/*
-		Read and check network protocol version
-	*/
-
-	u16 min_net_proto_version = 0;
-	if (pkt->getSize() >= 1 + PLAYERNAME_SIZE + PASSWORD_SIZE + 2)
-		min_net_proto_version = pkt->getU16(1 + PLAYERNAME_SIZE + PASSWORD_SIZE);
-
-	// Use same version as minimum and maximum if maximum version field
-	// doesn't exist (backwards compatibility)
-	u16 max_net_proto_version = min_net_proto_version;
-	if (pkt->getSize() >= 1 + PLAYERNAME_SIZE + PASSWORD_SIZE + 2 + 2)
-		max_net_proto_version = pkt->getU16(1 + PLAYERNAME_SIZE + PASSWORD_SIZE + 2);
-
-	// Start with client's maximum version
-	u16 net_proto_version = max_net_proto_version;
-
-	// Figure out a working version if it is possible at all
-	if (max_net_proto_version >= SERVER_PROTOCOL_VERSION_MIN ||
-			min_net_proto_version <= SERVER_PROTOCOL_VERSION_MAX) {
-		// If maximum is larger than our maximum, go with our maximum
-		if (max_net_proto_version > SERVER_PROTOCOL_VERSION_MAX)
-			net_proto_version = SERVER_PROTOCOL_VERSION_MAX;
-		// Else go with client's maximum
-		else
-			net_proto_version = max_net_proto_version;
-	}
-
-	// The client will send up to date init packet, ignore this one
-	if (net_proto_version >= 25)
-		return;
-
-	verbosestream << "Server: " << addr_s << ": Protocol version: min: "
-			<< min_net_proto_version << ", max: " << max_net_proto_version
-			<< ", chosen: " << net_proto_version << std::endl;
-
-	client->net_proto_version = net_proto_version;
-
-	if (net_proto_version < SERVER_PROTOCOL_VERSION_MIN ||
-			net_proto_version > SERVER_PROTOCOL_VERSION_MAX) {
-		actionstream << "Server: A mismatched client tried to connect from "
-				<< addr_s << std::endl;
-		DenyAccess_Legacy(pkt->getPeerId(), std::wstring(
-				L"Your client's version is not supported.\n"
-				L"Server version is ")
-				+ utf8_to_wide(g_version_string) + L",\n"
-				+ L"server's PROTOCOL_VERSION is "
-				+ utf8_to_wide(itos(SERVER_PROTOCOL_VERSION_MIN))
-				+ L"..."
-				+ utf8_to_wide(itos(SERVER_PROTOCOL_VERSION_MAX))
-				+ L", client's PROTOCOL_VERSION is "
-				+ utf8_to_wide(itos(min_net_proto_version))
-				+ L"..."
-				+ utf8_to_wide(itos(max_net_proto_version))
-		);
-		return;
-	}
-
-	if (g_settings->getBool("strict_protocol_version_checking")) {
-		if (net_proto_version != LATEST_PROTOCOL_VERSION) {
-			actionstream << "Server: A mismatched (strict) client tried to "
-					<< "connect from " << addr_s << std::endl;
-			DenyAccess_Legacy(pkt->getPeerId(), std::wstring(
-					L"Your client's version is not supported.\n"
-					L"Server version is ")
-					+ utf8_to_wide(g_version_string) + L",\n"
-					+ L"server's PROTOCOL_VERSION (strict) is "
-					+ utf8_to_wide(itos(LATEST_PROTOCOL_VERSION))
-					+ L", client's PROTOCOL_VERSION is "
-					+ utf8_to_wide(itos(min_net_proto_version))
-					+ L"..."
-					+ utf8_to_wide(itos(max_net_proto_version))
-			);
-			return;
-		}
-	}
-
-	/*
-		Set up player
-	*/
-	char playername[PLAYERNAME_SIZE];
-	unsigned int playername_length = 0;
-	for (; playername_length < PLAYERNAME_SIZE; playername_length++ ) {
-		playername[playername_length] = pkt->getChar(1+playername_length);
-		if (pkt->getChar(1+playername_length) == 0)
-			break;
-	}
-
-	if (playername_length == PLAYERNAME_SIZE) {
-		actionstream << "Server: Player with name exceeding max length "
-				<< "tried to connect from " << addr_s << std::endl;
-		DenyAccess_Legacy(pkt->getPeerId(), L"Name too long");
-		return;
-	}
-
-
-	if (playername[0]=='\0') {
-		actionstream << "Server: Player with an empty name "
-				<< "tried to connect from " << addr_s << std::endl;
-		DenyAccess_Legacy(pkt->getPeerId(), L"Empty name");
-		return;
-	}
-
-	if (string_allowed(playername, PLAYERNAME_ALLOWED_CHARS) == false) {
-		actionstream << "Server: Player with an invalid name "
-				<< "tried to connect from " << addr_s << std::endl;
-		DenyAccess_Legacy(pkt->getPeerId(), L"Name contains unallowed characters");
-		return;
-	}
-
-	if (!isSingleplayer() && strcasecmp(playername, "singleplayer") == 0) {
-		actionstream << "Server: Player with the name \"singleplayer\" "
-				<< "tried to connect from " << addr_s << std::endl;
-		DenyAccess_Legacy(pkt->getPeerId(), L"Name is not allowed");
-		return;
-	}
-
-	{
-		std::string reason;
-		if (m_script->on_prejoinplayer(playername, addr_s, &reason)) {
-			actionstream << "Server: Player with the name \"" << playername << "\" "
-					<< "tried to connect from " << addr_s << " "
-					<< "but it was disallowed for the following reason: "
-					<< reason << std::endl;
-			DenyAccess_Legacy(pkt->getPeerId(), utf8_to_wide(reason.c_str()));
-			return;
-		}
-	}
-
-	infostream<<"Server: New connection: \""<<playername<<"\" from "
-			<<addr_s<<" (peer_id="<<pkt->getPeerId()<<")"<<std::endl;
-
-	// Get password
-	char given_password[PASSWORD_SIZE];
-	if (pkt->getSize() < 1 + PLAYERNAME_SIZE + PASSWORD_SIZE) {
-		// old version - assume blank password
-		given_password[0] = 0;
-	}
-	else {
-		for (u16 i = 0; i < PASSWORD_SIZE - 1; i++) {
-			given_password[i] = pkt->getChar(21 + i);
-		}
-		given_password[PASSWORD_SIZE - 1] = 0;
-	}
-
-	if (!base64_is_valid(given_password)) {
-		actionstream << "Server: " << playername
-				<< " supplied invalid password hash" << std::endl;
-		DenyAccess_Legacy(pkt->getPeerId(), L"Invalid password hash");
-		return;
-	}
-
-	// Enforce user limit.
-	// Don't enforce for users that have some admin right
-	if (m_clients.getClientIDs(CS_Created).size() >= g_settings->getU16("max_users") &&
-			!checkPriv(playername, "server") &&
-			!checkPriv(playername, "ban") &&
-			!checkPriv(playername, "privs") &&
-			!checkPriv(playername, "password") &&
-			playername != g_settings->get("name")) {
-		actionstream << "Server: " << playername << " tried to join, but there"
-				<< " are already max_users="
-				<< g_settings->getU16("max_users") << " players." << std::endl;
-		DenyAccess_Legacy(pkt->getPeerId(), L"Too many users.");
-		return;
-	}
-
-	std::string checkpwd; // Password hash to check against
-	bool has_auth = m_script->getAuth(playername, &checkpwd, NULL);
-
-	// If no authentication info exists for user, create it
-	if (!has_auth) {
-		if (!isSingleplayer() &&
-				g_settings->getBool("disallow_empty_password") &&
-				std::string(given_password) == "") {
-			actionstream << "Server: " << playername
-					<< " supplied empty password" << std::endl;
-			DenyAccess_Legacy(pkt->getPeerId(), L"Empty passwords are "
-					L"disallowed. Set a password and try again.");
-			return;
-		}
-		std::string raw_default_password =
-			g_settings->get("default_password");
-		std::string initial_password =
-			translate_password(playername, raw_default_password);
-
-		// If default_password is empty, allow any initial password
-		if (raw_default_password.length() == 0)
-			initial_password = given_password;
-
-		m_script->createAuth(playername, initial_password);
-	}
-
-	has_auth = m_script->getAuth(playername, &checkpwd, NULL);
-
-	if (!has_auth) {
-		actionstream << "Server: " << playername << " cannot be authenticated"
-				<< " (auth handler does not work?)" << std::endl;
-		DenyAccess_Legacy(pkt->getPeerId(), L"Not allowed to login");
-		return;
-	}
-
-	if (given_password != checkpwd) {
-		actionstream << "Server: User " << playername
-			<< " at " << addr_s
-			<< " supplied wrong password (auth mechanism: legacy)."
-			<< std::endl;
-		DenyAccess_Legacy(pkt->getPeerId(), L"Wrong password");
-		return;
-	}
-
-	RemotePlayer *player =
-			static_cast<RemotePlayer*>(m_env->getPlayer(playername));
-
-	if (player && player->peer_id != 0) {
-		actionstream << "Server: " << playername << ": Failed to emerge player"
-				<< " (player allocated to an another client)" << std::endl;
-		DenyAccess_Legacy(pkt->getPeerId(), L"Another client is connected with this "
-				L"name. If your client closed unexpectedly, try again in "
-				L"a minute.");
-	}
-
-	m_clients.setPlayerName(pkt->getPeerId(), playername);
-
-	/*
-		Answer with a TOCLIENT_INIT
-	*/
-
-	NetworkPacket resp_pkt(TOCLIENT_INIT_LEGACY, 1 + 6 + 8 + 4,
-			pkt->getPeerId());
-
-	resp_pkt << (u8) deployed << (v3s16) floatToInt(v3f(0,0,0), BS)
-			<< (u64) m_env->getServerMap().getSeed()
-			<< g_settings->getFloat("dedicated_server_step");
-
-	Send(&resp_pkt);
-	m_clients.event(pkt->getPeerId(), CSE_InitLegacy);
-}
-
 void Server::handleCommand_Init2(NetworkPacket* pkt)
 {
 	verbosestream << "Server: Got TOSERVER_INIT2 from "
@@ -613,6 +287,9 @@ void Server::handleCommand_Init2(NetworkPacket* pkt)
 	m_clients.event(pkt->getPeerId(), CSE_GotInit2);
 	u16 protocol_version = m_clients.getProtocolVersion(pkt->getPeerId());
 
+	std::string lang;
+	if (pkt->getSize() > 0)
+		*pkt >> lang;
 
 	/*
 		Send some initialization data
@@ -633,7 +310,7 @@ void Server::handleCommand_Init2(NetworkPacket* pkt)
 	m_clients.event(pkt->getPeerId(), CSE_SetDefinitionsSent);
 
 	// Send media announcement
-	sendMediaAnnouncement(pkt->getPeerId());
+	sendMediaAnnouncement(pkt->getPeerId(), lang);
 
 	// Send detached inventories
 	sendDetachedInventories(pkt->getPeerId());
@@ -680,7 +357,7 @@ void Server::handleCommand_RequestMedia(NetworkPacket* pkt)
 
 void Server::handleCommand_ClientReady(NetworkPacket* pkt)
 {
-	u16 peer_id = pkt->getPeerId();
+	session_t peer_id = pkt->getPeerId();
 
 	PlayerSAO* playersao = StageTwoClientInit(peer_id);
 
@@ -688,7 +365,7 @@ void Server::handleCommand_ClientReady(NetworkPacket* pkt)
 		actionstream
 			<< "TOSERVER_CLIENT_READY stage 2 client init failed for peer_id: "
 			<< peer_id << std::endl;
-		m_con.DisconnectPeer(peer_id);
+		DisconnectPeer(peer_id);
 		return;
 	}
 
@@ -697,7 +374,7 @@ void Server::handleCommand_ClientReady(NetworkPacket* pkt)
 		errorstream
 			<< "TOSERVER_CLIENT_READY client sent inconsistent data, disconnecting peer_id: "
 			<< peer_id << std::endl;
-		m_con.DisconnectPeer(peer_id);
+		DisconnectPeer(peer_id);
 		return;
 	}
 
@@ -766,7 +443,7 @@ void Server::handleCommand_GotBlocks(NetworkPacket* pkt)
 void Server::process_PlayerPos(RemotePlayer *player, PlayerSAO *playersao,
 	NetworkPacket *pkt)
 {
-	if (pkt->getRemainingBytes() < 12 + 12 + 4 + 4)
+	if (pkt->getRemainingBytes() < 12 + 12 + 4 + 4 + 4 + 1 + 1)
 		return;
 
 	v3s32 ps, ss;
@@ -778,25 +455,21 @@ void Server::process_PlayerPos(RemotePlayer *player, PlayerSAO *playersao,
 	*pkt >> f32pitch;
 	*pkt >> f32yaw;
 
-	f32 pitch = (f32)f32pitch / 100.0;
-	f32 yaw = (f32)f32yaw / 100.0;
+	f32 pitch = (f32)f32pitch / 100.0f;
+	f32 yaw = (f32)f32yaw / 100.0f;
 	u32 keyPressed = 0;
 
 	// default behavior (in case an old client doesn't send these)
 	f32 fov = 0;
 	u8 wanted_range = 0;
 
-	if (pkt->getRemainingBytes() >= 4)
-		*pkt >> keyPressed;
-	if (pkt->getRemainingBytes() >= 1) {
-		*pkt >> f32fov;
-		fov = (f32)f32fov / 80.0;
-	}
-	if (pkt->getRemainingBytes() >= 1)
-		*pkt >> wanted_range;
+	*pkt >> keyPressed;
+	*pkt >> f32fov;
+	fov = (f32)f32fov / 80.0f;
+	*pkt >> wanted_range;
 
-	v3f position((f32)ps.X / 100.0, (f32)ps.Y / 100.0, (f32)ps.Z / 100.0);
-	v3f speed((f32)ss.X / 100.0, (f32)ss.Y / 100.0, (f32)ss.Z / 100.0);
+	v3f position((f32)ps.X / 100.0f, (f32)ps.Y / 100.0f, (f32)ps.Z / 100.0f);
+	v3f speed((f32)ss.X / 100.0f, (f32)ss.Y / 100.0f, (f32)ss.Z / 100.0f);
 
 	pitch = modulo360f(pitch);
 	yaw = wrapDegrees_0_360(yaw);
@@ -832,7 +505,7 @@ void Server::handleCommand_PlayerPos(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -841,7 +514,7 @@ void Server::handleCommand_PlayerPos(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player object for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -893,7 +566,7 @@ void Server::handleCommand_InventoryAction(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -902,7 +575,7 @@ void Server::handleCommand_InventoryAction(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player object for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -948,6 +621,18 @@ void Server::handleCommand_InventoryAction(NetworkPacket* pkt)
 		bool to_inv_is_current_player =
 			(ma->to_inv.type == InventoryLocation::PLAYER) &&
 			(ma->to_inv.name == player->getName());
+
+		InventoryLocation *remote = from_inv_is_current_player ?
+			&ma->to_inv : &ma->from_inv;
+
+		// Check for out-of-range interaction
+		if (remote->type == InventoryLocation::NODEMETA) {
+			v3f node_pos   = intToFloat(remote->p, BS);
+			v3f player_pos = player->getPlayerSAO()->getBasePosition();
+			f32 d = player_pos.getDistanceFrom(node_pos);
+			if (!checkInteractDistance(player, d, "inventory"))
+				return;
+		}
 
 		/*
 			Disable moving items out of craftpreview
@@ -1074,7 +759,7 @@ void Server::handleCommand_ChatMessage(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -1102,7 +787,7 @@ void Server::handleCommand_Damage(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -1111,7 +796,7 @@ void Server::handleCommand_Damage(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player object for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -1127,8 +812,9 @@ void Server::handleCommand_Damage(NetworkPacket* pkt)
 				<< (int)damage << " hp at " << PP(playersao->getBasePosition() / BS)
 				<< std::endl;
 
-		playersao->setHP(playersao->getHP() - damage);
-		SendPlayerHPOrDie(playersao);
+		PlayerHPChangeReason reason(PlayerHPChangeReason::FALL);
+		playersao->setHP(playersao->getHP() - damage, reason);
+		SendPlayerHPOrDie(playersao, reason);
 	}
 }
 
@@ -1168,7 +854,7 @@ void Server::handleCommand_Password(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -1221,7 +907,7 @@ void Server::handleCommand_PlayerItem(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -1230,7 +916,7 @@ void Server::handleCommand_PlayerItem(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player object for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -1248,7 +934,7 @@ void Server::handleCommand_Respawn(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -1265,6 +951,37 @@ void Server::handleCommand_Respawn(NetworkPacket* pkt)
 
 	// ActiveObject is added to environment in AsyncRunStep after
 	// the previous addition has been successfully removed
+}
+
+bool Server::checkInteractDistance(RemotePlayer *player, const f32 d, const std::string what)
+{
+	PlayerSAO *playersao = player->getPlayerSAO();
+	const InventoryList *hlist = playersao->getInventory()->getList("hand");
+	const ItemDefinition &playeritem_def =
+		playersao->getWieldedItem().getDefinition(m_itemdef);
+	const ItemDefinition &hand_def =
+		hlist ? hlist->getItem(0).getDefinition(m_itemdef) : m_itemdef->get("");
+
+	float max_d = BS * playeritem_def.range;
+	float max_d_hand = BS * hand_def.range;
+
+	if (max_d < 0 && max_d_hand >= 0)
+		max_d = max_d_hand;
+	else if (max_d < 0)
+		max_d = BS * 4.0f;
+
+	// cube diagonal: sqrt(3) = 1.732
+	if (d > max_d * 1.732) {
+		actionstream << "Player " << player->getName()
+				<< " tried to access " << what
+				<< " from too far: "
+				<< "d=" << d <<", max_d=" << max_d
+				<< ". ignoring." << std::endl;
+		// Call callbacks
+		m_script->on_cheat(playersao, "interacted_too_far");
+		return false;
+	}
+	return true;
 }
 
 void Server::handleCommand_Interact(NetworkPacket* pkt)
@@ -1301,7 +1018,7 @@ void Server::handleCommand_Interact(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -1310,7 +1027,7 @@ void Server::handleCommand_Interact(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player object for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -1377,7 +1094,7 @@ void Server::handleCommand_Interact(NetworkPacket* pkt)
 			client->SetBlockNotSent(blockpos);
 		}
 		// Placement -> above
-		if (action == 3) {
+		else if (action == 3) {
 			v3s16 blockpos = getNodeBlockPos(floatToInt(pointed_pos_above, BS));
 			client->SetBlockNotSent(blockpos);
 		}
@@ -1392,33 +1109,13 @@ void Server::handleCommand_Interact(NetworkPacket* pkt)
 			!g_settings->getBool("disable_anticheat");
 
 	if ((action == 0 || action == 2 || action == 3 || action == 4) &&
-			(enable_anticheat && !isSingleplayer())) {
+			enable_anticheat && !isSingleplayer()) {
 		float d = player_pos.getDistanceFrom(pointed_pos_under);
-		const ItemDefinition &playeritem_def =
-			playersao->getWieldedItem().getDefinition(m_itemdef);
-		float max_d = BS * playeritem_def.range;
-		InventoryList *hlist = playersao->getInventory()->getList("hand");
-		const ItemDefinition &hand_def =
-			hlist ? (hlist->getItem(0).getDefinition(m_itemdef)) : (m_itemdef->get(""));
-		float max_d_hand = BS * hand_def.range;
-		if (max_d < 0 && max_d_hand >= 0)
-			max_d = max_d_hand;
-		else if (max_d < 0)
-			max_d = BS * 4.0;
-		// cube diagonal: sqrt(3) = 1.73
-		if (d > max_d * 1.73) {
-			actionstream << "Player " << player->getName()
-					<< " tried to access " << pointed.dump()
-					<< " from too far: "
-					<< "d=" << d <<", max_d=" << max_d
-					<< ". ignoring." << std::endl;
+		if (!checkInteractDistance(player, d, pointed.dump())) {
 			// Re-send block to revert change on client-side
 			RemoteClient *client = getClient(pkt->getPeerId());
 			v3s16 blockpos = getNodeBlockPos(floatToInt(pointed_pos_under, BS));
 			client->SetBlockNotSent(blockpos);
-			// Call callbacks
-			m_script->on_cheat(playersao, "interacted_too_far");
-			// Do nothing else
 			return;
 		}
 	}
@@ -1453,8 +1150,8 @@ void Server::handleCommand_Interact(NetworkPacket* pkt)
 			playersao->noCheatDigStart(p_under);
 		}
 		else if (pointed.type == POINTEDTHING_OBJECT) {
-			// Skip if object has been removed
-			if (pointed_object->m_removed)
+			// Skip if object can't be interacted with anymore
+			if (pointed_object->isGone())
 				return;
 
 			actionstream<<player->getName()<<" punches object "
@@ -1479,12 +1176,14 @@ void Server::handleCommand_Interact(NetworkPacket* pkt)
 			// If the object is a player and its HP changed
 			if (src_original_hp != pointed_object->getHP() &&
 					pointed_object->getType() == ACTIVEOBJECT_TYPE_PLAYER) {
-				SendPlayerHPOrDie((PlayerSAO *)pointed_object);
+				SendPlayerHPOrDie((PlayerSAO *)pointed_object,
+						PlayerHPChangeReason(PlayerHPChangeReason::PLAYER_PUNCH, playersao));
 			}
 
 			// If the puncher is a player and its HP changed
 			if (dst_origin_hp != playersao->getHP())
-				SendPlayerHPOrDie(playersao);
+				SendPlayerHPOrDie(playersao,
+						PlayerHPChangeReason(PlayerHPChangeReason::PLAYER_PUNCH, pointed_object));
 		}
 
 	} // action == 0
@@ -1537,9 +1236,10 @@ void Server::handleCommand_Interact(NetworkPacket* pkt)
 				// If can't dig, try hand
 				if (!params.diggable) {
 					InventoryList *hlist = playersao->getInventory()->getList("hand");
-					const ItemDefinition &hand =
-						hlist ? hlist->getItem(0).getDefinition(m_itemdef) : m_itemdef->get("");
-					const ToolCapabilities *tp = hand.tool_capabilities;
+					const ToolCapabilities *tp = hlist
+						? &hlist->getItem(0).getToolCapabilities(m_itemdef)
+						: m_itemdef->get("").tool_capabilities;
+
 					if (tp)
 						params = getDigParams(m_nodedef->get(n).groups, tp);
 				}
@@ -1612,8 +1312,8 @@ void Server::handleCommand_Interact(NetworkPacket* pkt)
 		if (pointed.type == POINTEDTHING_OBJECT) {
 			// Right click object
 
-			// Skip if object has been removed
-			if (pointed_object->m_removed)
+			// Skip if object can't be interacted with anymore
+			if (pointed_object->isGone())
 				return;
 
 			actionstream << player->getName() << " right-clicks object "
@@ -1638,7 +1338,7 @@ void Server::handleCommand_Interact(NetworkPacket* pkt)
 		RemoteClient *client = getClient(pkt->getPeerId());
 		v3s16 blockpos = getNodeBlockPos(floatToInt(pointed_pos_above, BS));
 		v3s16 blockpos2 = getNodeBlockPos(floatToInt(pointed_pos_under, BS));
-		if (item.getDefinition(m_itemdef).node_placement_prediction != "") {
+		if (!item.getDefinition(m_itemdef).node_placement_prediction.empty()) {
 			client->SetBlockNotSent(blockpos);
 			if (blockpos2 != blockpos) {
 				client->SetBlockNotSent(blockpos2);
@@ -1740,7 +1440,7 @@ void Server::handleCommand_NodeMetaFields(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -1749,7 +1449,7 @@ void Server::handleCommand_NodeMetaFields(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player object for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!"  << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -1773,10 +1473,10 @@ void Server::handleCommand_NodeMetaFields(NetworkPacket* pkt)
 
 void Server::handleCommand_InventoryFields(NetworkPacket* pkt)
 {
-	std::string formname;
+	std::string client_formspec_name;
 	u16 num;
 
-	*pkt >> formname >> num;
+	*pkt >> client_formspec_name >> num;
 
 	StringMap fields;
 	for (u16 k = 0; k < num; k++) {
@@ -1791,7 +1491,7 @@ void Server::handleCommand_InventoryFields(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
@@ -1800,11 +1500,37 @@ void Server::handleCommand_InventoryFields(NetworkPacket* pkt)
 		errorstream << "Server::ProcessData(): Canceling: "
 				"No player object for peer_id=" << pkt->getPeerId()
 				<< " disconnecting peer!" << std::endl;
-		m_con.DisconnectPeer(pkt->getPeerId());
+		DisconnectPeer(pkt->getPeerId());
 		return;
 	}
 
-	m_script->on_playerReceiveFields(playersao, formname, fields);
+	if (client_formspec_name.empty()) { // pass through inventory submits
+		m_script->on_playerReceiveFields(playersao, client_formspec_name, fields);
+		return;
+	}
+
+	// verify that we displayed the formspec to the user
+	const auto peer_state_iterator = m_formspec_state_data.find(pkt->getPeerId());
+	if (peer_state_iterator != m_formspec_state_data.end()) {
+		const std::string &server_formspec_name = peer_state_iterator->second;
+		if (client_formspec_name == server_formspec_name) {
+			if (fields["quit"] == "true")
+				m_formspec_state_data.erase(peer_state_iterator);
+
+			m_script->on_playerReceiveFields(playersao, client_formspec_name, fields);
+			return;
+		}
+		actionstream << "'" << player->getName()
+			<< "' submitted formspec ('" << client_formspec_name
+			<< "') but the name of the formspec doesn't match the"
+			" expected name ('" << server_formspec_name << "')";
+
+	} else {
+		actionstream << "'" << player->getName()
+			<< "' submitted formspec ('" << client_formspec_name
+			<< "') but server hasn't sent formspec to client";
+	}
+	actionstream << ", possible exploitation attempt" << std::endl;
 }
 
 void Server::handleCommand_FirstSrp(NetworkPacket* pkt)
@@ -1896,10 +1622,10 @@ void Server::handleCommand_SrpBytesA(NetworkPacket* pkt)
 		if (wantSudo) {
 			DenySudoAccess(pkt->getPeerId());
 			return;
-		} else {
-			DenyAccess(pkt->getPeerId(), SERVER_ACCESSDENIED_UNEXPECTED_DATA);
-			return;
 		}
+
+		DenyAccess(pkt->getPeerId(), SERVER_ACCESSDENIED_UNEXPECTED_DATA);
+		return;
 	}
 
 	std::string bytes_A;
@@ -1968,10 +1694,10 @@ void Server::handleCommand_SrpBytesA(NetworkPacket* pkt)
 		if (wantSudo) {
 			DenySudoAccess(pkt->getPeerId());
 			return;
-		} else {
-			DenyAccess(pkt->getPeerId(), SERVER_ACCESSDENIED_UNEXPECTED_DATA);
-			return;
 		}
+
+		DenyAccess(pkt->getPeerId(), SERVER_ACCESSDENIED_UNEXPECTED_DATA);
+		return;
 	}
 
 	NetworkPacket resp_pkt(TOCLIENT_SRP_BYTES_S_B, 0, pkt->getPeerId());
@@ -1986,7 +1712,7 @@ void Server::handleCommand_SrpBytesM(NetworkPacket* pkt)
 
 	bool wantSudo = (cstate == CS_Active);
 
-	verbosestream << "Server: Recieved TOCLIENT_SRP_BYTES_M." << std::endl;
+	verbosestream << "Server: Received TOCLIENT_SRP_BYTES_M." << std::endl;
 
 	if (!((cstate == CS_HelloSent) || (cstate == CS_Active))) {
 		actionstream << "Server: got SRP _M packet in wrong state "
@@ -1996,8 +1722,8 @@ void Server::handleCommand_SrpBytesM(NetworkPacket* pkt)
 		return;
 	}
 
-	if ((client->chosen_mech != AUTH_MECHANISM_SRP)
-		&& (client->chosen_mech != AUTH_MECHANISM_LEGACY_PASSWORD)) {
+	if (client->chosen_mech != AUTH_MECHANISM_SRP &&
+			client->chosen_mech != AUTH_MECHANISM_LEGACY_PASSWORD) {
 		actionstream << "Server: got SRP _M packet, while auth"
 			<< "is going on with mech " << client->chosen_mech
 			<< " from " << getPeerAddress(pkt->getPeerId()).serializeString()
@@ -2005,10 +1731,10 @@ void Server::handleCommand_SrpBytesM(NetworkPacket* pkt)
 		if (wantSudo) {
 			DenySudoAccess(pkt->getPeerId());
 			return;
-		} else {
-			DenyAccess(pkt->getPeerId(), SERVER_ACCESSDENIED_UNEXPECTED_DATA);
-			return;
 		}
+
+		DenyAccess(pkt->getPeerId(), SERVER_ACCESSDENIED_UNEXPECTED_DATA);
+		return;
 	}
 
 	std::string bytes_M;
@@ -2036,14 +1762,16 @@ void Server::handleCommand_SrpBytesM(NetworkPacket* pkt)
 				<< " (SRP) password for authentication." << std::endl;
 			DenySudoAccess(pkt->getPeerId());
 			return;
-		} else {
-			actionstream << "Server: User " << client->getName()
-				<< " at " << getPeerAddress(pkt->getPeerId()).serializeString()
-				<< " supplied wrong password (auth mechanism: SRP)."
-				<< std::endl;
-			DenyAccess(pkt->getPeerId(), SERVER_ACCESSDENIED_WRONG_PASSWORD);
-			return;
 		}
+
+		std::string ip = getPeerAddress(pkt->getPeerId()).serializeString();
+		actionstream << "Server: User " << client->getName()
+			<< " at " << ip
+			<< " supplied wrong password (auth mechanism: SRP)."
+			<< std::endl;
+		m_script->on_auth_failure(client->getName(), ip);
+		DenyAccess(pkt->getPeerId(), SERVER_ACCESSDENIED_WRONG_PASSWORD);
+		return;
 	}
 
 	if (client->create_player_on_auth_success) {
@@ -2061,4 +1789,82 @@ void Server::handleCommand_SrpBytesM(NetworkPacket* pkt)
 	}
 
 	acceptAuth(pkt->getPeerId(), wantSudo);
+}
+
+/*
+ * Mod channels
+ */
+
+void Server::handleCommand_ModChannelJoin(NetworkPacket *pkt)
+{
+	std::string channel_name;
+	*pkt >> channel_name;
+
+	NetworkPacket resp_pkt(TOCLIENT_MODCHANNEL_SIGNAL, 1 + 2 + channel_name.size(),
+		pkt->getPeerId());
+
+	// Send signal to client to notify join succeed or not
+	if (g_settings->getBool("enable_mod_channels") &&
+			m_modchannel_mgr->joinChannel(channel_name, pkt->getPeerId())) {
+		resp_pkt << (u8) MODCHANNEL_SIGNAL_JOIN_OK;
+		infostream << "Peer " << pkt->getPeerId() << " joined channel " << channel_name
+				<< std::endl;
+	}
+	else {
+		resp_pkt << (u8)MODCHANNEL_SIGNAL_JOIN_FAILURE;
+		infostream << "Peer " << pkt->getPeerId() << " tried to join channel "
+			<< channel_name << ", but was already registered." << std::endl;
+	}
+	resp_pkt << channel_name;
+	Send(&resp_pkt);
+}
+
+void Server::handleCommand_ModChannelLeave(NetworkPacket *pkt)
+{
+	std::string channel_name;
+	*pkt >> channel_name;
+
+	NetworkPacket resp_pkt(TOCLIENT_MODCHANNEL_SIGNAL, 1 + 2 + channel_name.size(),
+		pkt->getPeerId());
+
+	// Send signal to client to notify join succeed or not
+	if (g_settings->getBool("enable_mod_channels") &&
+			m_modchannel_mgr->leaveChannel(channel_name, pkt->getPeerId())) {
+		resp_pkt << (u8)MODCHANNEL_SIGNAL_LEAVE_OK;
+		infostream << "Peer " << pkt->getPeerId() << " left channel " << channel_name
+				<< std::endl;
+	} else {
+		resp_pkt << (u8) MODCHANNEL_SIGNAL_LEAVE_FAILURE;
+		infostream << "Peer " << pkt->getPeerId() << " left channel " << channel_name
+				<< ", but was not registered." << std::endl;
+	}
+	resp_pkt << channel_name;
+	Send(&resp_pkt);
+}
+
+void Server::handleCommand_ModChannelMsg(NetworkPacket *pkt)
+{
+	std::string channel_name, channel_msg;
+	*pkt >> channel_name >> channel_msg;
+
+	verbosestream << "Mod channel message received from peer " << pkt->getPeerId()
+			<< " on channel " << channel_name << " message: " << channel_msg << std::endl;
+
+	// If mod channels are not enabled, discard message
+	if (!g_settings->getBool("enable_mod_channels")) {
+		return;
+	}
+
+	// If channel not registered, signal it and ignore message
+	if (!m_modchannel_mgr->channelRegistered(channel_name)) {
+		NetworkPacket resp_pkt(TOCLIENT_MODCHANNEL_SIGNAL, 1 + 2 + channel_name.size(),
+			pkt->getPeerId());
+		resp_pkt << (u8)MODCHANNEL_SIGNAL_CHANNEL_NOT_REGISTERED << channel_name;
+		Send(&resp_pkt);
+		return;
+	}
+
+	// @TODO: filter, rate limit
+
+	broadcastModChannelMessage(channel_name, channel_msg, pkt->getPeerId());
 }

@@ -21,17 +21,19 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "lua_api/l_internal.h"
 #include "common/c_content.h"
 #include "cpp_api/s_async.h"
-#include "guiEngine.h"
-#include "guiMainMenu.h"
-#include "guiKeyChangeMenu.h"
-#include "guiPathSelectMenu.h"
-#include "subgame.h"
+#include "gui/guiEngine.h"
+#include "gui/guiMainMenu.h"
+#include "gui/guiKeyChangeMenu.h"
+#include "gui/guiPathSelectMenu.h"
 #include "version.h"
 #include "porting.h"
 #include "filesys.h"
 #include "convert_json.h"
+#include "content/packages.h"
+#include "content/content.h"
+#include "content/subgames.h"
 #include "serverlist.h"
-#include "mapgen.h"
+#include "mapgen/mapgen.h"
 #include "settings.h"
 
 #include <IFileArchive.h>
@@ -233,23 +235,22 @@ int ModApiMainMenu::l_get_worlds(lua_State *L)
 	int top = lua_gettop(L);
 	unsigned int index = 1;
 
-	for (unsigned int i = 0; i < worlds.size(); i++)
-	{
+	for (const WorldSpec &world : worlds) {
 		lua_pushnumber(L,index);
 
 		lua_newtable(L);
 		int top_lvl2 = lua_gettop(L);
 
 		lua_pushstring(L,"path");
-		lua_pushstring(L,worlds[i].path.c_str());
+		lua_pushstring(L, world.path.c_str());
 		lua_settable(L, top_lvl2);
 
 		lua_pushstring(L,"name");
-		lua_pushstring(L,worlds[i].name.c_str());
+		lua_pushstring(L, world.name.c_str());
 		lua_settable(L, top_lvl2);
 
 		lua_pushstring(L,"gameid");
-		lua_pushstring(L,worlds[i].gameid.c_str());
+		lua_pushstring(L, world.gameid.c_str());
 		lua_settable(L, top_lvl2);
 
 		lua_settable(L, top);
@@ -258,58 +259,6 @@ int ModApiMainMenu::l_get_worlds(lua_State *L)
 	return 1;
 }
 
-/******************************************************************************/
-int ModApiMainMenu::l_get_games(lua_State *L)
-{
-	std::vector<SubgameSpec> games = getAvailableGames();
-
-	lua_newtable(L);
-	int top = lua_gettop(L);
-	unsigned int index = 1;
-
-	for (unsigned int i = 0; i < games.size(); i++)
-	{
-		lua_pushnumber(L,index);
-		lua_newtable(L);
-		int top_lvl2 = lua_gettop(L);
-
-		lua_pushstring(L,"id");
-		lua_pushstring(L,games[i].id.c_str());
-		lua_settable(L, top_lvl2);
-
-		lua_pushstring(L,"path");
-		lua_pushstring(L,games[i].path.c_str());
-		lua_settable(L, top_lvl2);
-
-		lua_pushstring(L,"gamemods_path");
-		lua_pushstring(L,games[i].gamemods_path.c_str());
-		lua_settable(L, top_lvl2);
-
-		lua_pushstring(L,"name");
-		lua_pushstring(L,games[i].name.c_str());
-		lua_settable(L, top_lvl2);
-
-		lua_pushstring(L,"menuicon_path");
-		lua_pushstring(L,games[i].menuicon_path.c_str());
-		lua_settable(L, top_lvl2);
-
-		lua_pushstring(L,"addon_mods_paths");
-		lua_newtable(L);
-		int table2 = lua_gettop(L);
-		int internal_index=1;
-		for (std::set<std::string>::iterator iter = games[i].addon_mods_paths.begin();
-				iter != games[i].addon_mods_paths.end(); ++iter) {
-			lua_pushnumber(L,internal_index);
-			lua_pushstring(L,(*iter).c_str());
-			lua_settable(L, table2);
-			internal_index++;
-		}
-		lua_settable(L, top_lvl2);
-		lua_settable(L, top);
-		index++;
-	}
-	return 1;
-}
 /******************************************************************************/
 int ModApiMainMenu::l_get_favorites(lua_State *L)
 {
@@ -331,112 +280,111 @@ int ModApiMainMenu::l_get_favorites(lua_State *L)
 	int top = lua_gettop(L);
 	unsigned int index = 1;
 
-	for (unsigned int i = 0; i < servers.size(); i++)
-	{
+	for (const Json::Value &server : servers) {
 
 		lua_pushnumber(L,index);
 
 		lua_newtable(L);
 		int top_lvl2 = lua_gettop(L);
 
-		if (servers[i]["clients"].asString().size()) {
-			std::string clients_raw = servers[i]["clients"].asString();
+		if (!server["clients"].asString().empty()) {
+			std::string clients_raw = server["clients"].asString();
 			char* endptr = 0;
 			int numbervalue = strtol(clients_raw.c_str(),&endptr,10);
 
-			if ((clients_raw != "") && (*endptr == 0)) {
+			if ((!clients_raw.empty()) && (*endptr == 0)) {
 				lua_pushstring(L,"clients");
 				lua_pushnumber(L,numbervalue);
 				lua_settable(L, top_lvl2);
 			}
 		}
 
-		if (servers[i]["clients_max"].asString().size()) {
+		if (!server["clients_max"].asString().empty()) {
 
-			std::string clients_max_raw = servers[i]["clients_max"].asString();
+			std::string clients_max_raw = server["clients_max"].asString();
 			char* endptr = 0;
 			int numbervalue = strtol(clients_max_raw.c_str(),&endptr,10);
 
-			if ((clients_max_raw != "") && (*endptr == 0)) {
+			if ((!clients_max_raw.empty()) && (*endptr == 0)) {
 				lua_pushstring(L,"clients_max");
 				lua_pushnumber(L,numbervalue);
 				lua_settable(L, top_lvl2);
 			}
 		}
 
-		if (servers[i]["version"].asString().size()) {
+		if (!server["version"].asString().empty()) {
 			lua_pushstring(L,"version");
-			std::string topush = servers[i]["version"].asString();
+			std::string topush = server["version"].asString();
 			lua_pushstring(L,topush.c_str());
 			lua_settable(L, top_lvl2);
 		}
 
-		if (servers[i]["proto_min"].asString().size()) {
+		if (!server["proto_min"].asString().empty()) {
 			lua_pushstring(L,"proto_min");
-			lua_pushinteger(L,servers[i]["proto_min"].asInt());
+			lua_pushinteger(L, server["proto_min"].asInt());
 			lua_settable(L, top_lvl2);
 		}
 
-		if (servers[i]["proto_max"].asString().size()) {
+		if (!server["proto_max"].asString().empty()) {
 			lua_pushstring(L,"proto_max");
-			lua_pushinteger(L,servers[i]["proto_max"].asInt());
+			lua_pushinteger(L, server["proto_max"].asInt());
 			lua_settable(L, top_lvl2);
 		}
 
-		if (servers[i]["password"].asString().size()) {
+		if (!server["password"].asString().empty()) {
 			lua_pushstring(L,"password");
-			lua_pushboolean(L,servers[i]["password"].asBool());
+			lua_pushboolean(L, server["password"].asBool());
 			lua_settable(L, top_lvl2);
 		}
 
-		if (servers[i]["creative"].asString().size()) {
+		if (!server["creative"].asString().empty()) {
 			lua_pushstring(L,"creative");
-			lua_pushboolean(L,servers[i]["creative"].asBool());
+			lua_pushboolean(L, server["creative"].asBool());
 			lua_settable(L, top_lvl2);
 		}
 
-		if (servers[i]["damage"].asString().size()) {
+		if (!server["damage"].asString().empty()) {
 			lua_pushstring(L,"damage");
-			lua_pushboolean(L,servers[i]["damage"].asBool());
+			lua_pushboolean(L, server["damage"].asBool());
 			lua_settable(L, top_lvl2);
 		}
 
-		if (servers[i]["pvp"].asString().size()) {
+		if (!server["pvp"].asString().empty()) {
 			lua_pushstring(L,"pvp");
-			lua_pushboolean(L,servers[i]["pvp"].asBool());
+			lua_pushboolean(L, server["pvp"].asBool());
 			lua_settable(L, top_lvl2);
 		}
 
-		if (servers[i]["description"].asString().size()) {
+		if (!server["description"].asString().empty()) {
 			lua_pushstring(L,"description");
-			std::string topush = servers[i]["description"].asString();
+			std::string topush = server["description"].asString();
 			lua_pushstring(L,topush.c_str());
 			lua_settable(L, top_lvl2);
 		}
 
-		if (servers[i]["name"].asString().size()) {
+		if (!server["name"].asString().empty()) {
 			lua_pushstring(L,"name");
-			std::string topush = servers[i]["name"].asString();
+			std::string topush = server["name"].asString();
 			lua_pushstring(L,topush.c_str());
 			lua_settable(L, top_lvl2);
 		}
 
-		if (servers[i]["address"].asString().size()) {
+		if (!server["address"].asString().empty()) {
 			lua_pushstring(L,"address");
-			std::string topush = servers[i]["address"].asString();
+			std::string topush = server["address"].asString();
 			lua_pushstring(L,topush.c_str());
 			lua_settable(L, top_lvl2);
 		}
 
-		if (servers[i]["port"].asString().size()) {
+		if (!server["port"].asString().empty()) {
 			lua_pushstring(L,"port");
-			std::string topush = servers[i]["port"].asString();
+			std::string topush = server["port"].asString();
 			lua_pushstring(L,topush.c_str());
 			lua_settable(L, top_lvl2);
 		}
 
-		if (servers[i].isMember("ping")) {
-			float ping = servers[i]["ping"].asFloat();
+		if (server.isMember("ping")) {
+			float ping = server["ping"].asFloat();
 			lua_pushstring(L, "ping");
 			lua_pushnumber(L, ping);
 			lua_settable(L, top_lvl2);
@@ -479,6 +427,127 @@ int ModApiMainMenu::l_delete_favorite(lua_State *L)
 	}
 
 	return 0;
+}
+
+/******************************************************************************/
+int ModApiMainMenu::l_get_games(lua_State *L)
+{
+	std::vector<SubgameSpec> games = getAvailableGames();
+
+	lua_newtable(L);
+	int top = lua_gettop(L);
+	unsigned int index = 1;
+
+	for (const SubgameSpec &game : games) {
+		lua_pushnumber(L, index);
+		lua_newtable(L);
+		int top_lvl2 = lua_gettop(L);
+
+		lua_pushstring(L,  "id");
+		lua_pushstring(L,  game.id.c_str());
+		lua_settable(L,    top_lvl2);
+
+		lua_pushstring(L,  "path");
+		lua_pushstring(L,  game.path.c_str());
+		lua_settable(L,    top_lvl2);
+
+		lua_pushstring(L,  "type");
+		lua_pushstring(L,  "game");
+		lua_settable(L,    top_lvl2);
+
+		lua_pushstring(L,  "gamemods_path");
+		lua_pushstring(L,  game.gamemods_path.c_str());
+		lua_settable(L,    top_lvl2);
+
+		lua_pushstring(L,  "name");
+		lua_pushstring(L,  game.name.c_str());
+		lua_settable(L,    top_lvl2);
+
+		lua_pushstring(L,  "author");
+		lua_pushstring(L,  game.author.c_str());
+		lua_settable(L,    top_lvl2);
+
+		lua_pushstring(L,  "release");
+		lua_pushinteger(L, game.release);
+		lua_settable(L,    top_lvl2);
+
+		lua_pushstring(L,  "menuicon_path");
+		lua_pushstring(L,  game.menuicon_path.c_str());
+		lua_settable(L,    top_lvl2);
+
+		lua_pushstring(L, "addon_mods_paths");
+		lua_newtable(L);
+		int table2 = lua_gettop(L);
+		int internal_index = 1;
+		for (const std::string &addon_mods_path : game.addon_mods_paths) {
+			lua_pushnumber(L, internal_index);
+			lua_pushstring(L, addon_mods_path.c_str());
+			lua_settable(L,   table2);
+			internal_index++;
+		}
+		lua_settable(L, top_lvl2);
+		lua_settable(L, top);
+		index++;
+	}
+	return 1;
+}
+
+/******************************************************************************/
+int ModApiMainMenu::l_get_content_info(lua_State *L)
+{
+	std::string path = luaL_checkstring(L, 1);
+
+	ContentSpec spec;
+	spec.path = path;
+	parseContentInfo(spec);
+
+	lua_newtable(L);
+
+	lua_pushstring(L, spec.name.c_str());
+	lua_setfield(L, -2, "name");
+
+	lua_pushstring(L, spec.type.c_str());
+	lua_setfield(L, -2, "type");
+
+	lua_pushstring(L, spec.author.c_str());
+	lua_setfield(L, -2, "author");
+
+	lua_pushinteger(L, spec.release);
+	lua_setfield(L, -2, "release");
+
+	lua_pushstring(L, spec.desc.c_str());
+	lua_setfield(L, -2, "description");
+
+	lua_pushstring(L, spec.path.c_str());
+	lua_setfield(L, -2, "path");
+
+	if (spec.type == "mod") {
+		ModSpec spec;
+		spec.path = path;
+		parseModContents(spec);
+
+		// Dependencies
+		lua_newtable(L);
+		int i = 1;
+		for (const auto &dep : spec.depends) {
+			lua_pushstring(L, dep.c_str());
+			lua_rawseti(L, -2, i);
+			i++;
+		}
+		lua_setfield(L, -2, "depends");
+
+		// Optional Dependencies
+		lua_newtable(L);
+		i = 1;
+		for (const auto &dep : spec.optdepends) {
+			lua_pushstring(L, dep.c_str());
+			lua_rawseti(L, -2, i);
+			i++;
+		}
+		lua_setfield(L, -2, "optional_depends");
+	}
+
+	return 1;
 }
 
 /******************************************************************************/
@@ -536,7 +605,7 @@ int ModApiMainMenu::l_delete_world(lua_State *L)
 
 		std::vector<std::string> paths;
 		paths.push_back(spec.path);
-		fs::GetRecursiveSubPaths(spec.path, paths);
+		fs::GetRecursiveSubPaths(spec.path, paths, true);
 
 		// Delete files
 		if (!fs::DeletePaths(paths)) {
@@ -558,7 +627,7 @@ int ModApiMainMenu::l_set_topleft_text(lua_State *L)
 	GUIEngine* engine = getGuiEngine(L);
 	sanity_check(engine != NULL);
 
-	std::string text = "";
+	std::string text;
 
 	if (!lua_isnone(L,1) &&	!lua_isnil(L,1))
 		text = luaL_checkstring(L, 1);
@@ -795,6 +864,10 @@ bool ModApiMainMenu::isMinetestPath(std::string path)
 	if (fs::PathStartsWith(path,fs::RemoveRelativePathComponents(porting::path_user + DIR_DELIM + "mods")))
 		return true;
 
+	/* mods */
+	if (fs::PathStartsWith(path,fs::RemoveRelativePathComponents(porting::path_user + DIR_DELIM + "textures")))
+		return true;
+
 	/* worlds */
 	if (fs::PathStartsWith(path,fs::RemoveRelativePathComponents(porting::path_user + DIR_DELIM + "worlds")))
 		return true;
@@ -929,12 +1002,74 @@ int ModApiMainMenu::l_get_screen_info(lua_State *L)
 	return 1;
 }
 
+int ModApiMainMenu::l_get_package_list(lua_State *L)
+{
+	std::string url = g_settings->get("contentdb_url");
+	std::vector<Package> packages = getPackagesFromURL(url + "/packages/");
+
+	// Make table
+	lua_newtable(L);
+	int top = lua_gettop(L);
+	unsigned int index = 1;
+
+	// Fill table
+	for (const auto &package : packages) {
+		lua_pushnumber(L, index);
+		lua_newtable(L);
+
+		int top_lvl2 = lua_gettop(L);
+
+		lua_pushstring(L, "name");
+		lua_pushstring(L, package.name.c_str());
+		lua_settable  (L, top_lvl2);
+
+		lua_pushstring(L, "title");
+		lua_pushstring(L, package.title.c_str());
+		lua_settable  (L, top_lvl2);
+
+		lua_pushstring(L, "author");
+		lua_pushstring(L, package.author.c_str());
+		lua_settable  (L, top_lvl2);
+
+		lua_pushstring(L, "type");
+		lua_pushstring(L, package.type.c_str());
+		lua_settable  (L, top_lvl2);
+
+		lua_pushstring(L, "short_description");
+		lua_pushstring(L, package.shortDesc.c_str());
+		lua_settable  (L, top_lvl2);
+
+		lua_pushstring(L, "url");
+		lua_pushstring(L, package.url.c_str());
+		lua_settable  (L, top_lvl2);
+
+		lua_pushstring (L, "release");
+		lua_pushinteger(L, package.release);
+		lua_settable   (L, top_lvl2);
+
+		lua_pushstring(L, "screenshots");
+		lua_newtable(L);
+		{
+			int top_screenshots = lua_gettop(L);
+			for (size_t i = 0; i < package.screenshots.size(); ++i) {
+				lua_pushnumber(L, i + 1);
+				lua_pushstring(L, package.screenshots[i].c_str());
+				lua_settable(L, top_screenshots);
+			}
+		}
+		lua_settable(L, top_lvl2);
+
+		lua_settable(L, top);
+		index++;
+	}
+
+	return 1;
+}
+
 /******************************************************************************/
 int ModApiMainMenu::l_get_min_supp_proto(lua_State *L)
 {
-	u16 proto_version_min = g_settings->getFlag("send_pre_v25_init") ?
-		CLIENT_PROTOCOL_VERSION_MIN_LEGACY : CLIENT_PROTOCOL_VERSION_MIN;
-	lua_pushinteger(L, proto_version_min);
+	lua_pushinteger(L, CLIENT_PROTOCOL_VERSION_MIN);
 	return 1;
 }
 
@@ -974,6 +1109,7 @@ void ModApiMainMenu::Initialize(lua_State *L, int top)
 	API_FCT(get_table_index);
 	API_FCT(get_worlds);
 	API_FCT(get_games);
+	API_FCT(get_content_info);
 	API_FCT(start);
 	API_FCT(close);
 	API_FCT(get_favorites);
@@ -1000,6 +1136,7 @@ void ModApiMainMenu::Initialize(lua_State *L, int top)
 	API_FCT(get_video_drivers);
 	API_FCT(get_video_modes);
 	API_FCT(get_screen_info);
+	API_FCT(get_package_list);
 	API_FCT(get_min_supp_proto);
 	API_FCT(get_max_supp_proto);
 	API_FCT(do_async_callback);
@@ -1008,7 +1145,6 @@ void ModApiMainMenu::Initialize(lua_State *L, int top)
 /******************************************************************************/
 void ModApiMainMenu::InitializeAsync(lua_State *L, int top)
 {
-
 	API_FCT(get_worlds);
 	API_FCT(get_games);
 	API_FCT(get_favorites);
@@ -1024,4 +1160,5 @@ void ModApiMainMenu::InitializeAsync(lua_State *L, int top)
 	//API_FCT(extract_zip); //TODO remove dependency to GuiEngine
 	API_FCT(download_file);
 	//API_FCT(gettext); (gettext lib isn't threadsafe)
+	API_FCT(get_package_list);
 }

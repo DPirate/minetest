@@ -17,11 +17,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef MAPBLOCK_HEADER
-#define MAPBLOCK_HEADER
+#pragma once
 
 #include <set>
-#include "debug.h"
 #include "irr_v3d.h"
 #include "mapnode.h"
 #include "exceptions.h"
@@ -32,7 +30,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "modifiedstate.h"
 #include "util/numeric.h" // getContainerPos
 #include "settings.h"
-#include "mapgen.h"
+#include "mapgen/mapgen.h"
 
 class Map;
 class NodeMetadataList;
@@ -65,7 +63,8 @@ class VoxelManipulator;
 #define MOD_REASON_STATIC_DATA_REMOVED       (1 << 16)
 #define MOD_REASON_STATIC_DATA_CHANGED       (1 << 17)
 #define MOD_REASON_EXPIRE_DAYNIGHTDIFF       (1 << 18)
-#define MOD_REASON_UNKNOWN                   (1 << 19)
+#define MOD_REASON_VMANIP                    (1 << 19)
+#define MOD_REASON_UNKNOWN                   (1 << 20)
 
 ////
 //// MapBlock itself
@@ -257,7 +256,7 @@ public:
 		*valid_position = isValidPosition(x, y, z);
 
 		if (!*valid_position)
-			return MapNode(CONTENT_IGNORE);
+			return {CONTENT_IGNORE};
 
 		return data[z * zstride + y * ystride + x];
 	}
@@ -294,8 +293,8 @@ public:
 	inline MapNode getNodeNoCheck(s16 x, s16 y, s16 z, bool *valid_position)
 	{
 		*valid_position = data != nullptr;
-		if (!valid_position)
-			return MapNode(CONTENT_IGNORE);
+		if (!*valid_position)
+			return {CONTENT_IGNORE};
 
 		return data[z * zstride + y * ystride + x];
 	}
@@ -348,10 +347,6 @@ public:
 		for (u16 x = 0; x < w; x++)
 			setNode(x0 + x, y0 + y, z0 + z, node);
 	}
-
-	// See comments in mapblock.cpp
-	bool propagateSunlight(std::set<v3s16> &light_sources,
-		bool remove_light=false, bool *black_air_left=NULL);
 
 	// Copies data to VoxelManipulator to getPosRelative()
 	void copyTo(VoxelManipulator &dst);
@@ -458,12 +453,12 @@ public:
 	//// Node Timers
 	////
 
-	inline NodeTimer getNodeTimer(v3s16 p)
+	inline NodeTimer getNodeTimer(const v3s16 &p)
 	{
 		return m_node_timers.get(p);
 	}
 
-	inline void removeNodeTimer(v3s16 p)
+	inline void removeNodeTimer(const v3s16 &p)
 	{
 		m_node_timers.remove(p);
 	}
@@ -642,27 +637,12 @@ inline bool blockpos_over_max_limit(v3s16 p)
 /*
 	Returns the position of the block where the node is located
 */
-inline v3s16 getNodeBlockPos(v3s16 p)
+inline v3s16 getNodeBlockPos(const v3s16 &p)
 {
 	return getContainerPos(p, MAP_BLOCKSIZE);
-}
-
-inline v2s16 getNodeSectorPos(v2s16 p)
-{
-	return getContainerPos(p, MAP_BLOCKSIZE);
-}
-
-inline s16 getNodeBlockY(s16 y)
-{
-	return getContainerPos(y, MAP_BLOCKSIZE);
 }
 
 inline void getNodeBlockPosWithOffset(const v3s16 &p, v3s16 &block, v3s16 &offset)
-{
-	getContainerPosWithOffset(p, MAP_BLOCKSIZE, block, offset);
-}
-
-inline void getNodeSectorPosWithOffset(const v2s16 &p, v2s16 &block, v2s16 &offset)
 {
 	getContainerPosWithOffset(p, MAP_BLOCKSIZE, block, offset);
 }
@@ -671,5 +651,3 @@ inline void getNodeSectorPosWithOffset(const v2s16 &p, v2s16 &block, v2s16 &offs
 	Get a quick string to describe what a block actually contains
 */
 std::string analyze_block(MapBlock *block);
-
-#endif

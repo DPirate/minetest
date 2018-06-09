@@ -80,7 +80,7 @@ LOCAL_CFLAGS := -D_IRR_ANDROID_PLATFORM_      \
 ifndef NDEBUG
 LOCAL_CFLAGS += -g -D_DEBUG -O0 -fno-omit-frame-pointer
 else
-LOCAL_CFLAGS += -O3
+LOCAL_CFLAGS += $(TARGET_CFLAGS_ADDON)
 endif
 
 ifdef GPROF
@@ -91,7 +91,7 @@ endif
 # LOCAL_CFLAGS += -fsanitize=address
 # LOCAL_LDFLAGS += -fsanitize=address
 
-ifeq ($(TARGET_ARCH_ABI),x86)
+ifeq ($(TARGET_ABI),x86)
 LOCAL_CFLAGS += -fno-stack-protector
 endif
 
@@ -114,7 +114,7 @@ LOCAL_C_INCLUDES := \
 LOCAL_SRC_FILES := \
 		jni/src/ban.cpp                           \
 		jni/src/camera.cpp                        \
-		jni/src/cavegen.cpp                       \
+		jni/src/mapgen/cavegen.cpp                \
 		jni/src/chat.cpp                          \
 		jni/src/client.cpp                        \
 		jni/src/clientenvironment.cpp             \
@@ -130,15 +130,20 @@ LOCAL_SRC_FILES := \
 		jni/src/content_mapnode.cpp               \
 		jni/src/content_nodemeta.cpp              \
 		jni/src/content_sao.cpp                   \
+		jni/src/content/content.cpp               \
+		jni/src/content/mods.cpp                  \
+		jni/src/content/packages.cpp              \
+		jni/src/content/subgames.cpp              \
 		jni/src/convert_json.cpp                  \
 		jni/src/craftdef.cpp                      \
-		jni/src/database-dummy.cpp                \
-		jni/src/database-files.cpp                \
-		jni/src/database-sqlite3.cpp              \
-		jni/src/database.cpp                      \
+		jni/src/database/database-dummy.cpp       \
+		jni/src/database/database-files.cpp       \
+		jni/src/database/database-leveldb.cpp     \
+		jni/src/database/database-sqlite3.cpp     \
+		jni/src/database/database.cpp             \
 		jni/src/debug.cpp                         \
 		jni/src/defaultsettings.cpp               \
-		jni/src/dungeongen.cpp                    \
+		jni/src/mapgen/dungeongen.cpp             \
 		jni/src/emerge.cpp                        \
 		jni/src/environment.cpp                   \
 		jni/src/face_position_cache.cpp           \
@@ -148,19 +153,23 @@ LOCAL_SRC_FILES := \
 		jni/src/game.cpp                          \
 		jni/src/genericobject.cpp                 \
 		jni/src/gettext.cpp                       \
-		jni/src/guiChatConsole.cpp                \
-		jni/src/guiEngine.cpp                     \
-		jni/src/guiPathSelectMenu.cpp             \
-		jni/src/guiFormSpecMenu.cpp               \
-		jni/src/guiKeyChangeMenu.cpp              \
-		jni/src/guiPasswordChange.cpp             \
-		jni/src/guiTable.cpp                      \
+		jni/src/gui/guiChatConsole.cpp            \
+		jni/src/gui/guiConfirmRegistration.cpp    \
+		jni/src/gui/guiEditBoxWithScrollbar.cpp   \
+		jni/src/gui/guiEngine.cpp                 \
+		jni/src/gui/guiPathSelectMenu.cpp         \
+		jni/src/gui/guiFormSpecMenu.cpp           \
+		jni/src/gui/guiKeyChangeMenu.cpp          \
+		jni/src/gui/guiPasswordChange.cpp         \
+		jni/src/gui/guiTable.cpp                  \
 		jni/src/guiscalingfilter.cpp              \
-		jni/src/guiVolumeChange.cpp               \
+		jni/src/gui/guiVolumeChange.cpp           \
+		jni/src/gui/intlGUIEditBox.cpp            \
+		jni/src/gui/profilergraph.cpp             \
+		jni/src/gui/touchscreengui.cpp            \
 		jni/src/httpfetch.cpp                     \
 		jni/src/hud.cpp                           \
 		jni/src/imagefilters.cpp                  \
-		jni/src/intlGUIEditBox.cpp                \
 		jni/src/inventory.cpp                     \
 		jni/src/inventorymanager.cpp              \
 		jni/src/itemdef.cpp                       \
@@ -174,26 +183,26 @@ LOCAL_SRC_FILES := \
 		jni/src/map_settings_manager.cpp          \
 		jni/src/mapblock.cpp                      \
 		jni/src/mapblock_mesh.cpp                 \
-		jni/src/mapgen.cpp                        \
-		jni/src/mapgen_carpathian.cpp             \
-		jni/src/mapgen_flat.cpp                   \
-		jni/src/mapgen_fractal.cpp                \
-		jni/src/mapgen_singlenode.cpp             \
-		jni/src/mapgen_v5.cpp                     \
-		jni/src/mapgen_v6.cpp                     \
-		jni/src/mapgen_v7.cpp                     \
-		jni/src/mapgen_valleys.cpp                \
+		jni/src/mapgen/mapgen.cpp                 \
+		jni/src/mapgen/mapgen_carpathian.cpp      \
+		jni/src/mapgen/mapgen_flat.cpp            \
+		jni/src/mapgen/mapgen_fractal.cpp         \
+		jni/src/mapgen/mapgen_singlenode.cpp      \
+		jni/src/mapgen/mapgen_v5.cpp              \
+		jni/src/mapgen/mapgen_v6.cpp              \
+		jni/src/mapgen/mapgen_v7.cpp              \
+		jni/src/mapgen/mapgen_valleys.cpp         \
 		jni/src/mapnode.cpp                       \
 		jni/src/mapsector.cpp                     \
 		jni/src/mesh.cpp                          \
 		jni/src/mesh_generator_thread.cpp         \
 		jni/src/metadata.cpp                      \
-		jni/src/mg_biome.cpp                      \
-		jni/src/mg_decoration.cpp                 \
-		jni/src/mg_ore.cpp                        \
-		jni/src/mg_schematic.cpp                  \
+		jni/src/mapgen/mg_biome.cpp               \
+		jni/src/mapgen/mg_decoration.cpp          \
+		jni/src/mapgen/mg_ore.cpp                 \
+		jni/src/mapgen/mg_schematic.cpp           \
 		jni/src/minimap.cpp                       \
-		jni/src/mods.cpp                          \
+		jni/src/modchannels.cpp                   \
 		jni/src/nameidmapping.cpp                 \
 		jni/src/nodedef.cpp                       \
 		jni/src/nodemetadata.cpp                  \
@@ -214,20 +223,19 @@ LOCAL_SRC_FILES := \
 		jni/src/rollback.cpp                      \
 		jni/src/rollback_interface.cpp            \
 		jni/src/serialization.cpp                 \
+		jni/src/server/mods.cpp                   \
+		jni/src/server/serveractiveobjectmap.cpp  \
 		jni/src/server.cpp                        \
 		jni/src/serverenvironment.cpp             \
 		jni/src/serverlist.cpp                    \
 		jni/src/serverobject.cpp                  \
 		jni/src/shader.cpp                        \
 		jni/src/sky.cpp                           \
-		jni/src/socket.cpp                        \
-		jni/src/sound.cpp                         \
-		jni/src/sound_openal.cpp                  \
 		jni/src/staticobject.cpp                  \
-		jni/src/subgame.cpp                       \
 		jni/src/tileanimation.cpp                 \
+		jni/src/translation.cpp                   \
 		jni/src/tool.cpp                          \
-		jni/src/treegen.cpp                       \
+		jni/src/mapgen/treegen.cpp                \
 		jni/src/version.cpp                       \
 		jni/src/voxel.cpp                         \
 		jni/src/voxelalgorithms.cpp               \
@@ -248,6 +256,7 @@ LOCAL_SRC_FILES := \
 		jni/src/unittest/test_compression.cpp     \
 		jni/src/unittest/test_connection.cpp      \
 		jni/src/unittest/test_filepath.cpp        \
+		jni/src/unittest/test_gameui.cpp          \
 		jni/src/unittest/test_inventory.cpp       \
 		jni/src/unittest/test_map_settings_manager.cpp \
 		jni/src/unittest/test_mapnode.cpp         \
@@ -264,27 +273,42 @@ LOCAL_SRC_FILES := \
 		jni/src/unittest/test_utilities.cpp       \
 		jni/src/unittest/test_voxelalgorithms.cpp \
 		jni/src/unittest/test_voxelmanipulator.cpp \
-		jni/src/touchscreengui.cpp                \
-		jni/src/database-leveldb.cpp              \
 		jni/src/settings.cpp                      \
 		jni/src/wieldmesh.cpp                     \
+		jni/src/client/meshgen/collector.cpp      \
 		jni/src/client/clientlauncher.cpp         \
+		jni/src/client/gameui.cpp                 \
+		jni/src/client/hud.cpp                    \
 		jni/src/client/inputhandler.cpp           \
 		jni/src/client/renderingengine.cpp        \
+		jni/src/client/sound.cpp                  \
+		jni/src/client/sound_openal.cpp           \
 		jni/src/client/tile.cpp                   \
 		jni/src/client/joystick_controller.cpp    \
-		jni/src/irrlicht_changes/static_text.cpp
+		jni/src/client/render/factory.cpp         \
+		jni/src/client/render/pageflip.cpp        \
+		jni/src/client/render/sidebyside.cpp      \
+		jni/src/client/render/plain.cpp           \
+		jni/src/client/render/anaglyph.cpp        \
+		jni/src/client/render/interlaced.cpp      \
+		jni/src/client/render/core.cpp            \
+		jni/src/client/render/stereo.cpp          \
+		jni/src/irrlicht_changes/static_text.cpp  \
+		jni/src/irrlicht_changes/CGUITTFont.cpp
 
 # intentionally kept out (we already build openssl itself): jni/src/util/sha256.c
 
 # Network
 LOCAL_SRC_FILES += \
+		jni/src/network/address.cpp               \
 		jni/src/network/connection.cpp            \
 		jni/src/network/networkpacket.cpp         \
 		jni/src/network/clientopcodes.cpp         \
 		jni/src/network/clientpackethandler.cpp   \
+		jni/src/network/connectionthreads.cpp     \
 		jni/src/network/serveropcodes.cpp         \
 		jni/src/network/serverpackethandler.cpp   \
+		jni/src/network/socket.cpp                \
 
 # lua api
 LOCAL_SRC_FILES += \
@@ -300,6 +324,7 @@ LOCAL_SRC_FILES += \
 		jni/src/script/cpp_api/s_inventory.cpp    \
 		jni/src/script/cpp_api/s_item.cpp         \
 		jni/src/script/cpp_api/s_mainmenu.cpp     \
+		jni/src/script/cpp_api/s_modchannels.cpp  \
 		jni/src/script/cpp_api/s_node.cpp         \
 		jni/src/script/cpp_api/s_nodemeta.cpp     \
 		jni/src/script/cpp_api/s_player.cpp       \
@@ -319,11 +344,14 @@ LOCAL_SRC_FILES += \
 		jni/src/script/lua_api/l_mapgen.cpp       \
 		jni/src/script/lua_api/l_metadata.cpp     \
 		jni/src/script/lua_api/l_minimap.cpp      \
+		jni/src/script/lua_api/l_modchannels.cpp  \
 		jni/src/script/lua_api/l_nodemeta.cpp     \
 		jni/src/script/lua_api/l_nodetimer.cpp    \
 		jni/src/script/lua_api/l_noise.cpp        \
 		jni/src/script/lua_api/l_object.cpp       \
+		jni/src/script/lua_api/l_playermeta.cpp   \
 		jni/src/script/lua_api/l_particles.cpp    \
+		jni/src/script/lua_api/l_particles_local.cpp\
 		jni/src/script/lua_api/l_rollback.cpp     \
 		jni/src/script/lua_api/l_server.cpp       \
 		jni/src/script/lua_api/l_settings.cpp     \
@@ -337,7 +365,7 @@ LOCAL_SRC_FILES += \
 		jni/src/script/scripting_mainmenu.cpp
 
 #freetype2 support
-LOCAL_SRC_FILES += jni/src/cguittfont/xCGUITTFont.cpp
+#LOCAL_SRC_FILES += jni/src/cguittfont/xCGUITTFont.cpp
 
 # Lua
 LOCAL_SRC_FILES += \
@@ -378,7 +406,6 @@ LOCAL_SRC_FILES += deps/sqlite/sqlite3.c
 # Threading
 LOCAL_SRC_FILES += \
 		jni/src/threading/event.cpp \
-		jni/src/threading/mutex.cpp \
 		jni/src/threading/semaphore.cpp \
 		jni/src/threading/thread.cpp
 

@@ -18,16 +18,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 */
 
 #include "minimap.h"
-#include "threading/mutex_auto_lock.h"
-#include "threading/semaphore.h"
+#include <cmath>
+#include "client.h"
 #include "clientmap.h"
 #include "settings.h"
-#include "nodedef.h"
-#include "porting.h"
-#include "util/numeric.h"
-#include "util/string.h"
+#include "shader.h"
 #include "mapblock.h"
-#include <math.h>
 #include "client/renderingengine.h"
 
 
@@ -37,16 +33,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 MinimapUpdateThread::~MinimapUpdateThread()
 {
-	for (std::map<v3s16, MinimapMapblock *>::iterator
-			it = m_blocks_cache.begin();
-			it != m_blocks_cache.end(); ++it) {
-		delete it->second;
+	for (auto &it : m_blocks_cache) {
+		delete it.second;
 	}
 
-	for (std::deque<QueuedMinimapUpdate>::iterator
-			it = m_update_queue.begin();
-			it != m_update_queue.end(); ++it) {
-		QueuedMinimapUpdate &q = *it;
+	for (auto &q : m_update_queue) {
 		delete q.data;
 	}
 }
@@ -57,10 +48,7 @@ bool MinimapUpdateThread::pushBlockUpdate(v3s16 pos, MinimapMapblock *data)
 
 	// Find if block is already in queue.
 	// If it is, update the data and quit.
-	for (std::deque<QueuedMinimapUpdate>::iterator
-			it = m_update_queue.begin();
-			it != m_update_queue.end(); ++it) {
-		QueuedMinimapUpdate &q = *it;
+	for (QueuedMinimapUpdate &q : m_update_queue) {
 		if (q.pos == pos) {
 			delete q.data;
 			q.data = data;
@@ -128,7 +116,6 @@ void MinimapUpdateThread::doUpdate()
 
 void MinimapUpdateThread::getMap(v3s16 pos, s16 size, s16 height)
 {
-	v3s16 region(size, 0, size);
 	v3s16 pos_min(pos.X - size / 2, pos.Y - height / 2, pos.Z - size / 2);
 	v3s16 pos_max(pos_min.X + size - 1, pos.Y + height / 2, pos_min.Z + size - 1);
 	v3s16 blockpos_min = getNodeBlockPos(pos_min);
@@ -288,9 +275,9 @@ MinimapShape Minimap::getMinimapShape()
 {
 	if (data->minimap_shape_round) {
 		return MINIMAP_SHAPE_ROUND;
-	} else {
-		return MINIMAP_SHAPE_SQUARE;
 	}
+
+	return MINIMAP_SHAPE_SQUARE;
 }
 
 void Minimap::setMinimapMode(MinimapMode mode)
@@ -442,12 +429,12 @@ v3f Minimap::getYawVec()
 {
 	if (data->minimap_shape_round) {
 		return v3f(
-			cos(m_angle * core::DEGTORAD),
-			sin(m_angle * core::DEGTORAD),
+			std::cos(m_angle * core::DEGTORAD),
+			std::sin(m_angle * core::DEGTORAD),
 			1.0);
-	} else {
-		return v3f(1.0, 0.0, 1.0);
 	}
+
+	return v3f(1.0, 0.0, 1.0);
 }
 
 scene::SMeshBuffer *Minimap::getMinimapMeshBuffer()
@@ -524,15 +511,17 @@ void Minimap::drawMinimap()
 	driver->setMaterial(material);
 	driver->drawMeshBuffer(m_meshbuffer);
 
-	// If round minimap, draw player marker
-	if (!data->minimap_shape_round) {
+	// Draw player marker on minimap
+	if (data->minimap_shape_round) {
+		matrix.setRotationDegrees(core::vector3df(0, 0, 0));
+	} else {
 		matrix.setRotationDegrees(core::vector3df(0, 0, m_angle));
-		material.TextureLayer[0].Texture = data->player_marker;
-
-		driver->setTransform(video::ETS_WORLD, matrix);
-		driver->setMaterial(material);
-		driver->drawMeshBuffer(m_meshbuffer);
 	}
+
+	material.TextureLayer[0].Texture = data->player_marker;
+	driver->setTransform(video::ETS_WORLD, matrix);
+	driver->setMaterial(material);
+	driver->drawMeshBuffer(m_meshbuffer);
 
 	// Reset transformations
 	driver->setTransform(video::ETS_VIEW, oldViewMat);
@@ -545,8 +534,8 @@ void Minimap::drawMinimap()
 	core::rect<s32> img_rect(0, 0, imgsize.Width, imgsize.Height);
 	static const video::SColor col(255, 255, 255, 255);
 	static const video::SColor c[4] = {col, col, col, col};
-	f32 sin_angle = sin(m_angle * core::DEGTORAD);
-	f32 cos_angle = cos(m_angle * core::DEGTORAD);
+	f32 sin_angle = std::sin(m_angle * core::DEGTORAD);
+	f32 cos_angle = std::cos(m_angle * core::DEGTORAD);
 	s32 marker_size2 =  0.025 * (float)size;
 	for (std::list<v2f>::const_iterator
 			i = m_active_markers.begin();
@@ -579,9 +568,8 @@ void Minimap::updateActiveMarkers()
 
 	m_active_markers.clear();
 
-	for (std::list<Nametag *>::const_iterator i = nametags.begin();
-			i != nametags.end(); ++i) {
-		v3s16 pos = floatToInt((*i)->parent_node->getPosition() +
+	for (Nametag *nametag : nametags) {
+		v3s16 pos = floatToInt(nametag->parent_node->getPosition() +
 			intToFloat(client->getCamera()->getOffset(), BS), BS);
 		pos -= data->pos - v3s16(data->map_size / 2,
 				data->scan_height / 2,
@@ -597,8 +585,9 @@ void Minimap::updateActiveMarkers()
 		if (!mask_col.getAlpha()) {
 			continue;
 		}
-		m_active_markers.push_back(v2f(((float)pos.X / (float)MINIMAP_MAX_SX) - 0.5,
-			(1.0 - (float)pos.Z / (float)MINIMAP_MAX_SY) - 0.5));
+
+		m_active_markers.emplace_back(((float)pos.X / (float)MINIMAP_MAX_SX) - 0.5,
+			(1.0 - (float)pos.Z / (float)MINIMAP_MAX_SY) - 0.5);
 	}
 }
 
@@ -606,7 +595,7 @@ void Minimap::updateActiveMarkers()
 //// MinimapMapblock
 ////
 
-void MinimapMapblock::getMinimapNodes(VoxelManipulator *vmanip, v3s16 pos)
+void MinimapMapblock::getMinimapNodes(VoxelManipulator *vmanip, const v3s16 &pos)
 {
 
 	for (s16 x = 0; x < MAP_BLOCKSIZE; x++)

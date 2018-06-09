@@ -25,6 +25,17 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "common/c_content.h"
 #include "s_item.h"
 
+void ScriptApiClient::on_mods_loaded()
+{
+	SCRIPTAPI_PRECHECKHEADER
+
+	// Get registered shutdown hooks
+	lua_getglobal(L, "core");
+	lua_getfield(L, -1, "registered_on_mods_loaded");
+	// Call callbacks
+	runCallbacks(0, RUN_CALLBACKS_MODE_FIRST);
+}
+
 void ScriptApiClient::on_shutdown()
 {
 	SCRIPTAPI_PRECHECKHEADER
@@ -33,17 +44,6 @@ void ScriptApiClient::on_shutdown()
 	lua_getglobal(L, "core");
 	lua_getfield(L, -1, "registered_on_shutdown");
 	// Call callbacks
-	runCallbacks(0, RUN_CALLBACKS_MODE_FIRST);
-}
-
-void ScriptApiClient::on_connect()
-{
-	SCRIPTAPI_PRECHECKHEADER
-
-	// get registered connect hooks
-	lua_getglobal(L, "core");
-	lua_getfield(L, -1, "registered_on_connect");
-	// Call callback
 	runCallbacks(0, RUN_CALLBACKS_MODE_FIRST);
 }
 
@@ -155,7 +155,7 @@ bool ScriptApiClient::on_dignode(v3s16 p, MapNode node)
 {
 	SCRIPTAPI_PRECHECKHEADER
 
-	INodeDefManager *ndef = getClient()->ndef();
+	const NodeDefManager *ndef = getClient()->ndef();
 
 	// Get core.registered_on_dignode
 	lua_getglobal(L, "core");
@@ -174,7 +174,7 @@ bool ScriptApiClient::on_punchnode(v3s16 p, MapNode node)
 {
 	SCRIPTAPI_PRECHECKHEADER
 
-	INodeDefManager *ndef = getClient()->ndef();
+	const NodeDefManager *ndef = getClient()->ndef();
 
 	// Get core.registered_on_punchgnode
 	lua_getglobal(L, "core");
@@ -221,6 +221,27 @@ bool ScriptApiClient::on_item_use(const ItemStack &item, const PointedThing &poi
 
 	// Call functions
 	runCallbacks(2, RUN_CALLBACKS_MODE_OR);
+	return lua_toboolean(L, -1);
+}
+
+bool ScriptApiClient::on_inventory_open(Inventory *inventory)
+{
+	SCRIPTAPI_PRECHECKHEADER
+
+	lua_getglobal(L, "core");
+	lua_getfield(L, -1, "registered_on_inventory_open");
+
+	std::vector<const InventoryList*> lists = inventory->getLists();
+	std::vector<const InventoryList*>::iterator iter = lists.begin();
+	lua_createtable(L, 0, lists.size());
+	for (; iter != lists.end(); iter++) {
+		const char* name = (*iter)->getName().c_str();
+		lua_pushstring(L, name);
+		push_inventory_list(L, inventory, name);
+		lua_rawset(L, -3);
+	}
+
+	runCallbacks(1, RUN_CALLBACKS_MODE_OR);
 	return lua_toboolean(L, -1);
 }
 

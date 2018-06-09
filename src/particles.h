@@ -17,14 +17,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef PARTICLES_HEADER
-#define PARTICLES_HEADER
+#pragma once
 
 #include <iostream>
 #include "irrlichttypes_extrabloated.h"
 #include "client/tile.h"
 #include "localplayer.h"
-#include "environment.h"
 #include "tileanimation.h"
 
 struct ClientEvent;
@@ -55,7 +53,7 @@ class Particle : public scene::ISceneNode
 		u8 glow,
 		video::SColor color = video::SColor(0xFFFFFFFF)
 	);
-	~Particle();
+	~Particle() = default;
 
 	virtual const aabb3f &getBoundingBox() const
 	{
@@ -116,7 +114,7 @@ private:
 
 class ParticleSpawner
 {
-	public:
+public:
 	ParticleSpawner(IGameDef* gamedef,
 		LocalPlayer *player,
 		u16 amount,
@@ -135,15 +133,19 @@ class ParticleSpawner
 		const struct TileAnimationParams &anim, u8 glow,
 		ParticleManager* p_manager);
 
-	~ParticleSpawner();
+	~ParticleSpawner() = default;
 
 	void step(float dtime, ClientEnvironment *env);
 
 	bool get_expired ()
 	{ return (m_amount <= 0) && m_spawntime != 0; }
 
-	private:
-	ParticleManager* m_particlemanager;
+private:
+	void spawnParticle(ClientEnvironment *env, float radius,
+			bool is_attached, const v3f &attached_pos,
+			float attached_yaw);
+
+	ParticleManager *m_particlemanager;
 	float m_time;
 	IGameDef *m_gamedef;
 	LocalPlayer *m_player;
@@ -187,11 +189,16 @@ public:
 	void addDiggingParticles(IGameDef *gamedef, LocalPlayer *player, v3s16 pos,
 		const MapNode &n, const ContentFeatures &f);
 
-	void addPunchingParticles(IGameDef *gamedef, LocalPlayer *player, v3s16 pos,
-		const MapNode &n, const ContentFeatures &f);
-
 	void addNodeParticle(IGameDef *gamedef, LocalPlayer *player, v3s16 pos,
 		const MapNode &n, const ContentFeatures &f);
+
+	u32 getSpawnerId() const
+	{
+		for (u32 id = 0;; ++id) { // look for unused particlespawner id
+	 		if (m_particle_spawners.find(id) == m_particle_spawners.end())
+	 			return id;
+	 	}
+	}
 
 protected:
 	void addParticle(Particle* toadd);
@@ -210,5 +217,3 @@ private:
 	std::mutex m_particle_list_lock;
 	std::mutex m_spawner_list_lock;
 };
-
-#endif

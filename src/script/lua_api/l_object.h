@@ -17,8 +17,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef L_OBJECT_H_
-#define L_OBJECT_H_
+#pragma once
 
 #include "lua_api/l_base.h"
 #include "irrlichttypes.h"
@@ -36,7 +35,7 @@ class ObjectRef : public ModApiBase {
 public:
 	ObjectRef(ServerActiveObject *object);
 
-	~ObjectRef();
+	~ObjectRef() = default;
 
 	// Creates an ObjectRef and leaves it on top of stack
 	// Not callable from Lua; all references are created on the C side.
@@ -127,6 +126,9 @@ private:
 	// set_animation(self, frame_range, frame_speed, frame_blend, frame_loop)
 	static int l_set_animation(lua_State *L);
 
+	// set_animation_frame_speed(self, frame_speed)
+	static int l_set_animation_frame_speed(lua_State *L);
+
 	// get_animation(self)
 	static int l_get_animation(lua_State *L);
 
@@ -158,6 +160,9 @@ private:
 
 	// set_velocity(self, {x=num, y=num, z=num})
 	static int l_set_velocity(lua_State *L);
+
+	// add_velocity(self, {x=num, y=num, z=num})
+	static int l_add_velocity(lua_State *L);
 
 	// get_velocity(self)
 	static int l_get_velocity(lua_State *L);
@@ -245,11 +250,20 @@ private:
 	// get_attribute(self, attribute)
 	static int l_get_attribute(lua_State *L);
 
+	// get_meta(self)
+	static int l_get_meta(lua_State *L);
+
 	// set_inventory_formspec(self, formspec)
 	static int l_set_inventory_formspec(lua_State *L);
 
 	// get_inventory_formspec(self) -> formspec
 	static int l_get_inventory_formspec(lua_State *L);
+
+	// set_formspec_prepend(self, formspec)
+	static int l_set_formspec_prepend(lua_State *L);
+
+	// get_formspec_prepend(self) -> formspec
+	static int l_get_formspec_prepend(lua_State *L);
 
 	// get_player_control(self)
 	static int l_get_player_control(lua_State *L);
@@ -333,5 +347,3 @@ private:
 	static int l_get_nametag_attributes(lua_State *L);
 
 };
-
-#endif /* L_OBJECT_H_ */

@@ -17,22 +17,26 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef SERVER_ENVIRONMENT_HEADER
-#define SERVER_ENVIRONMENT_HEADER
+#pragma once
 
+#include "activeobject.h"
 #include "environment.h"
 #include "mapnode.h"
-#include "mapblock.h"
+#include "server/serveractiveobjectmap.h"
+#include "settings.h"
+#include "util/numeric.h"
 #include <set>
 
 class IGameDef;
 class ServerMap;
 struct GameParams;
+class MapBlock;
 class RemotePlayer;
 class PlayerDatabase;
 class PlayerSAO;
 class ServerEnvironment;
 class ActiveBlockModifier;
+struct StaticObject;
 class ServerActiveObject;
 class Server;
 class ServerScripting;
@@ -47,14 +51,14 @@ class ServerScripting;
 class ActiveBlockModifier
 {
 public:
-	ActiveBlockModifier(){};
-	virtual ~ActiveBlockModifier(){};
+	ActiveBlockModifier() = default;
+	virtual ~ActiveBlockModifier() = default;
 
 	// Set of contents to trigger on
-	virtual const std::set<std::string> &getTriggerContents() const = 0;
+	virtual const std::vector<std::string> &getTriggerContents() const = 0;
 	// Set of required neighbors (trigger doesn't happen if none are found)
 	// Empty = do not check neighbors
-	virtual const std::set<std::string> &getRequiredNeighbors() const = 0;
+	virtual const std::vector<std::string> &getRequiredNeighbors() const = 0;
 	// Trigger interval in seconds
 	virtual float getTriggerInterval() = 0;
 	// Random chance of (1 / return value), 0 is disallowed
@@ -82,7 +86,8 @@ struct LoadingBlockModifierDef
 	std::string name;
 	bool run_at_every_load = false;
 
-	virtual ~LoadingBlockModifierDef() {}
+	virtual ~LoadingBlockModifierDef() = default;
+
 	virtual void trigger(ServerEnvironment *env, v3s16 p, MapNode n){};
 };
 
@@ -104,7 +109,7 @@ struct LBMContentMapping
 class LBMManager
 {
 public:
-	LBMManager() {}
+	LBMManager() = default;
 	~LBMManager();
 
 	// Don't call this after loadIntroductionTimes() ran.
@@ -150,8 +155,9 @@ private:
 class ActiveBlockList
 {
 public:
-	void update(std::vector<v3s16> &active_positions,
-		s16 radius,
+	void update(std::vector<PlayerSAO*> &active_players,
+		s16 active_block_range,
+		s16 active_object_range,
 		std::set<v3s16> &blocks_removed,
 		std::set<v3s16> &blocks_added);
 
@@ -164,6 +170,7 @@ public:
 	}
 
 	std::set<v3s16> m_list;
+	std::set<v3s16> m_abm_list;
 	std::set<v3s16> m_forceloaded_list;
 
 private:
@@ -186,8 +193,6 @@ enum ClearObjectsMode {
 
 	This is not thread-safe. Server uses an environment mutex.
 */
-
-typedef std::unordered_map<u16, ServerActiveObject *> ServerActiveObjectMap;
 
 class ServerEnvironment : public Environment
 {
@@ -215,7 +220,7 @@ public:
 	// Save players
 	void saveLoadedPlayers();
 	void savePlayer(RemotePlayer *player);
-	PlayerSAO *loadPlayer(RemotePlayer *player, bool *new_player, u16 peer_id,
+	PlayerSAO *loadPlayer(RemotePlayer *player, bool *new_player, session_t peer_id,
 		bool is_singleplayer);
 	void addPlayer(RemotePlayer *player);
 	void removePlayer(RemotePlayer *player);
@@ -226,9 +231,6 @@ public:
 	*/
 	void saveMeta();
 	void loadMeta();
-	// to be called instead of loadMeta if
-	// env_meta.txt doesn't exist (e.g. new world)
-	void loadDefaultMeta();
 
 	u32 addParticleSpawner(float exptime);
 	u32 addParticleSpawner(float exptime, u16 attached_id);
@@ -250,6 +252,8 @@ public:
 		Returns 0 if not added and thus deleted.
 	*/
 	u16 addActiveObject(ServerActiveObject *object);
+
+	void updateActiveObject(ServerActiveObject *object);
 
 	/*
 		Add an active object as a static object to the corresponding
@@ -322,8 +326,15 @@ public:
 	// This makes stuff happen
 	void step(f32 dtime);
 
-	//check if there's a line of sight between two positions
-	bool line_of_sight(v3f pos1, v3f pos2, float stepsize=1.0, v3s16 *p=NULL);
+	/*!
+	 * Returns false if the given line intersects with a
+	 * non-air node, true otherwise.
+	 * \param pos1 start of the line
+	 * \param pos2 end of the line
+	 * \param p output, position of the first non-air node
+	 * the line intersects
+	 */
+	bool line_of_sight(v3f pos1, v3f pos2, v3s16 *p = NULL);
 
 	u32 getGameTime() const { return m_game_time; }
 
@@ -337,12 +348,18 @@ public:
 	void setStaticForActiveObjectsInBlock(v3s16 blockpos,
 		bool static_exists, v3s16 static_block=v3s16(0,0,0));
 
-	RemotePlayer *getPlayer(const u16 peer_id);
+	RemotePlayer *getPlayer(const session_t peer_id);
 	RemotePlayer *getPlayer(const char* name);
+	u32 getPlayerCount() const { return m_players.size(); }
 
 	static bool migratePlayersDatabase(const GameParams &game_params,
 			const Settings &cmd_args);
 private:
+
+	/**
+	 * called if env_meta.txt doesn't exist (e.g. new world)
+	 */
+	void loadDefaultMeta();
 
 	static PlayerDatabase *openPlayerDatabase(const std::string &name,
 			const std::string &savedir, const Settings &conf);
@@ -364,7 +381,7 @@ private:
 	u16 addActiveObjectRaw(ServerActiveObject *object, bool set_changed, u32 dtime_s);
 
 	/*
-		Remove all objects that satisfy (m_removed && m_known_by_count==0)
+		Remove all objects that satisfy (isGone() && m_known_by_count==0)
 	*/
 	void removeRemovedObjects();
 
@@ -383,6 +400,14 @@ private:
 		shall only be set so in the destructor of the environment.
 	*/
 	void deactivateFarObjects(bool force_delete);
+
+	/*
+		A few helpers used by the three above methods
+	*/
+	void deleteStaticFromBlock(
+			ServerActiveObject *obj, u16 id, u32 mod_reason, bool no_emerge);
+	bool saveStaticToBlock(v3s16 blockpos, u16 store_id,
+			ServerActiveObject *obj, const StaticObject &s_obj, u32 mod_reason);
 
 	/*
 		Member variables
@@ -436,5 +461,3 @@ private:
 	std::unordered_map<u32, float> m_particle_spawners;
 	std::unordered_map<u32, u16> m_particle_spawner_attachments;
 };
-
-#endif

@@ -32,6 +32,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	#include <windows.h>
 	#include <wincrypt.h>
 	#include <algorithm>
+	#include <shlwapi.h>
 #endif
 #if !defined(_WIN32)
 	#include <unistd.h>
@@ -59,7 +60,7 @@ namespace porting
 
 bool g_killed = false;
 
-bool * signal_handler_killstatus(void)
+bool *signal_handler_killstatus()
 {
 	return &g_killed;
 }
@@ -167,26 +168,32 @@ bool detectMSVCBuildDir(const std::string &path)
 		"bin\\Build",
 		NULL
 	};
-	return (removeStringEnd(path, ends) != "");
+	return (!removeStringEnd(path, ends).empty());
 }
 
 std::string get_sysinfo()
 {
 #ifdef _WIN32
-	OSVERSIONINFO osvi;
-	std::ostringstream oss;
-	std::string tmp;
-	ZeroMemory(&osvi, sizeof(OSVERSIONINFO));
-	osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
-	GetVersionEx(&osvi);
-	tmp = osvi.szCSDVersion;
-	std::replace(tmp.begin(), tmp.end(), ' ', '_');
 
-	oss << "Windows/" << osvi.dwMajorVersion << "."
-		<< osvi.dwMinorVersion;
-	if (osvi.szCSDVersion[0])
-		oss << "-" << tmp;
-	oss << " ";
+	std::ostringstream oss;
+	LPSTR filePath = new char[MAX_PATH];
+	UINT blockSize;
+	VS_FIXEDFILEINFO *fixedFileInfo;
+
+	GetSystemDirectoryA(filePath, MAX_PATH);
+	PathAppendA(filePath, "kernel32.dll");
+
+	DWORD dwVersionSize = GetFileVersionInfoSizeA(filePath, NULL);
+	LPBYTE lpVersionInfo = new BYTE[dwVersionSize];
+
+	GetFileVersionInfoA(filePath, 0, dwVersionSize, lpVersionInfo);
+	VerQueryValueA(lpVersionInfo, "\\", (LPVOID *)&fixedFileInfo, &blockSize);
+
+	oss << "Windows/"
+		<< HIWORD(fixedFileInfo->dwProductVersionMS) << '.' // Major
+		<< LOWORD(fixedFileInfo->dwProductVersionMS) << '.' // Minor
+		<< HIWORD(fixedFileInfo->dwProductVersionLS) << ' '; // Build
+
 	#ifdef _WIN64
 	oss << "x86_64";
 	#else
@@ -196,6 +203,9 @@ std::string get_sysinfo()
 	else
 		oss << "x86";
 	#endif
+
+	delete[] lpVersionInfo;
+	delete[] filePath;
 
 	return oss.str();
 #else
@@ -341,6 +351,21 @@ bool getCurrentExecPath(char *buf, size_t len)
 #endif
 
 
+//// Non-Windows
+#if !defined(_WIN32)
+
+const char *getHomeOrFail()
+{
+	const char *home = getenv("HOME");
+	// In rare cases the HOME environment variable may be unset
+	FATAL_ERROR_IF(!home,
+		"Required environment variable HOME is not set");
+	return home;
+}
+
+#endif
+
+
 //// Windows
 #if defined(_WIN32)
 
@@ -388,7 +413,7 @@ bool setSystemPaths()
 	// It is identified by containing the subdirectory "builtin".
 	std::list<std::string> trylist;
 	std::string static_sharedir = STATIC_SHAREDIR;
-	if (static_sharedir != "" && static_sharedir != ".")
+	if (!static_sharedir.empty() && static_sharedir != ".")
 		trylist.push_back(static_sharedir);
 
 	trylist.push_back(bindir + DIR_DELIM ".." DIR_DELIM "share"
@@ -420,7 +445,7 @@ bool setSystemPaths()
 	}
 
 #ifndef __ANDROID__
-	path_user = std::string(getenv("HOME")) + DIR_DELIM "."
+	path_user = std::string(getHomeOrFail()) + DIR_DELIM "."
 		+ PROJECT_NAME;
 #endif
 
@@ -444,7 +469,7 @@ bool setSystemPaths()
 	}
 	CFRelease(resources_url);
 
-	path_user = std::string(getenv("HOME"))
+	path_user = std::string(getHomeOrFail())
 		+ "/Library/Application Support/"
 		+ PROJECT_NAME;
 	return true;
@@ -456,7 +481,7 @@ bool setSystemPaths()
 bool setSystemPaths()
 {
 	path_share = STATIC_SHAREDIR;
-	path_user  = std::string(getenv("HOME")) + DIR_DELIM "."
+	path_user  = std::string(getHomeOrFail()) + DIR_DELIM "."
 		+ lowercase(PROJECT_NAME);
 	return true;
 }
@@ -623,7 +648,7 @@ bool secure_rand_fill_buf(void *buf, size_t len)
 
 #endif
 
-void attachOrCreateConsole(void)
+void attachOrCreateConsole()
 {
 #ifdef _WIN32
 	static bool consoleAllocated = false;

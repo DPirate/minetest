@@ -17,8 +17,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef STATICOBJECT_HEADER
-#define STATICOBJECT_HEADER
+#pragma once
 
 #include "irrlichttypes_bloated.h"
 #include <string>
@@ -27,19 +26,16 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <map>
 #include "debug.h"
 
+class ServerActiveObject;
+
 struct StaticObject
 {
 	u8 type = 0;
 	v3f pos;
 	std::string data;
 
-	StaticObject() {}
-	StaticObject(u8 type_, v3f pos_, const std::string &data_):
-		type(type_),
-		pos(pos_),
-		data(data_)
-	{
-	}
+	StaticObject() = default;
+	StaticObject(const ServerActiveObject *s_obj, const v3f &pos_);
 
 	void serialize(std::ostream &os);
 	void deSerialize(std::istream &is, u8 version);
@@ -52,7 +48,7 @@ public:
 		Inserts an object to the container.
 		Id must be unique (active) or 0 (stored).
 	*/
-	void insert(u16 id, StaticObject obj)
+	void insert(u16 id, const StaticObject &obj)
 	{
 		if(id == 0)
 		{
@@ -95,6 +91,3 @@ public:
 
 private:
 };
-
-#endif
-

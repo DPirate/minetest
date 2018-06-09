@@ -22,7 +22,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <sstream>
 
 #include "convert_json.h"
-#include "mods.h"
+#include "content/mods.h"
 #include "config.h"
 #include "log.h"
 #include "settings.h"
@@ -46,12 +46,15 @@ Json::Value fetchJsonValue(const std::string &url,
 		return Json::Value();
 	}
 	Json::Value root;
-	Json::Reader reader;
 	std::istringstream stream(fetch_result.data);
 
-	if (!reader.parse(stream, root)) {
+	Json::CharReaderBuilder builder;
+	builder.settings_["collectComments"] = false;
+	std::string errs;
+
+	if (!Json::parseFromStream(builder, stream, &root, &errs)) {
 		errorstream << "URL: " << url << std::endl;
-		errorstream << "Failed to parse json data " << reader.getFormattedErrorMessages();
+		errorstream << "Failed to parse json data " << errs << std::endl;
 		if (fetch_result.data.size() > 100) {
 			errorstream << "Data (" << fetch_result.data.size()
 				<< " bytes) printed to warningstream." << std::endl;
@@ -63,4 +66,14 @@ Json::Value fetchJsonValue(const std::string &url,
 	}
 
 	return root;
+}
+
+std::string fastWriteJson(const Json::Value &value)
+{
+	std::ostringstream oss;
+	Json::StreamWriterBuilder builder;
+	builder["indentation"] = "";
+	std::unique_ptr<Json::StreamWriter> writer(builder.newStreamWriter());
+	writer->write(value, &oss);
+	return oss.str();
 }

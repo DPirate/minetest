@@ -18,8 +18,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef REMOTEPLAYER_HEADER
-#define REMOTEPLAYER_HEADER
+#pragma once
 
 #include "player.h"
 #include "cloudparams.h"
@@ -42,7 +41,7 @@ class RemotePlayer : public Player
 
 public:
 	RemotePlayer(const char *name, IItemDefManager *idef);
-	virtual ~RemotePlayer() {}
+	virtual ~RemotePlayer() = default;
 
 	void deSerialize(std::istream &is, const std::string &playername, PlayerSAO *sao);
 
@@ -72,7 +71,7 @@ public:
 
 	void setHotbarImage(const std::string &name) { hud_hotbar_image = name; }
 
-	std::string getHotbarImage() const { return hud_hotbar_image; }
+	const std::string &getHotbarImage() const { return hud_hotbar_image; }
 
 	void setHotbarSelectedImage(const std::string &name)
 	{
@@ -136,6 +135,10 @@ public:
 
 	u16 protocol_version = 0;
 
+	session_t getPeerId() const { return m_peer_id; }
+
+	void setPeerId(session_t peer_id) { m_peer_id = peer_id; }
+
 private:
 	/*
 		serialize() writes a bunch of text that can contain
@@ -156,7 +159,7 @@ private:
 	float m_chat_message_allowance = 5.0f;
 	u16 m_message_rate_overhead = 0;
 
-	bool m_day_night_ratio_do_override;
+	bool m_day_night_ratio_do_override = false;
 	float m_day_night_ratio;
 	std::string hud_hotbar_image = "";
 	std::string hud_hotbar_selected_image = "";
@@ -167,6 +170,6 @@ private:
 	bool m_sky_clouds;
 
 	CloudParams m_cloud_params;
-};
 
-#endif
+	session_t m_peer_id = PEER_ID_INEXISTENT;
+};

@@ -17,7 +17,7 @@
 
 local function current_game()
 	local last_game_id = core.settings:get("menu_last_game")
-	local game, index = gamemgr.find_by_gameid(last_game_id)
+	local game, index = pkgmgr.find_by_gameid(last_game_id)
 
 	return game
 end
@@ -32,12 +32,12 @@ local function singleplayer_refresh_gamebar()
 
 	local function game_buttonbar_button_handler(fields)
 		for key,value in pairs(fields) do
-			for j=1,#gamemgr.games,1 do
-				if ("game_btnbar_" .. gamemgr.games[j].id == key) then
-					mm_texture.update("singleplayer", gamemgr.games[j])
-					core.set_topleft_text(gamemgr.games[j].name)
-					core.settings:set("menu_last_game",gamemgr.games[j].id)
-					menudata.worldlist:set_filtercriteria(gamemgr.games[j].id)
+			for j=1,#pkgmgr.games,1 do
+				if ("game_btnbar_" .. pkgmgr.games[j].id == key) then
+					mm_texture.update("singleplayer", pkgmgr.games[j])
+					core.set_topleft_text(pkgmgr.games[j].name)
+					core.settings:set("menu_last_game",pkgmgr.games[j].id)
+					menudata.worldlist:set_filtercriteria(pkgmgr.games[j].id)
 					local index = filterlist.get_current_index(menudata.worldlist,
 						tonumber(core.settings:get("mainmenu_last_selected_world")))
 					if not index or index < 1 then
@@ -59,21 +59,21 @@ local function singleplayer_refresh_gamebar()
 		game_buttonbar_button_handler,
 		{x=-0.3,y=5.9}, "horizontal", {x=12.4,y=1.15})
 
-	for i=1,#gamemgr.games,1 do
-		local btn_name = "game_btnbar_" .. gamemgr.games[i].id
+	for i=1,#pkgmgr.games,1 do
+		local btn_name = "game_btnbar_" .. pkgmgr.games[i].id
 
 		local image = nil
 		local text = nil
-		local tooltip = core.formspec_escape(gamemgr.games[i].name)
+		local tooltip = core.formspec_escape(pkgmgr.games[i].name)
 
-		if gamemgr.games[i].menuicon_path ~= nil and
-			gamemgr.games[i].menuicon_path ~= "" then
-			image = core.formspec_escape(gamemgr.games[i].menuicon_path)
+		if pkgmgr.games[i].menuicon_path ~= nil and
+			pkgmgr.games[i].menuicon_path ~= "" then
+			image = core.formspec_escape(pkgmgr.games[i].menuicon_path)
 		else
 
-			local part1 = gamemgr.games[i].id:sub(1,5)
-			local part2 = gamemgr.games[i].id:sub(6,10)
-			local part3 = gamemgr.games[i].id:sub(11)
+			local part1 = pkgmgr.games[i].id:sub(1,5)
+			local part2 = pkgmgr.games[i].id:sub(6,10)
+			local part3 = pkgmgr.games[i].id:sub(11)
 
 			text = part1 .. "\n" .. part2
 			if part3 ~= nil and
@@ -93,9 +93,9 @@ local function get_formspec(tabview, name, tabdata)
 				)
 
 	retval = retval ..
-			"button[4,4.15;2.6,0.5;world_delete;".. fgettext("Delete") .. "]" ..
-			"button[6.5,4.15;2.8,0.5;world_create;".. fgettext("New") .. "]" ..
-			"button[9.2,4.15;2.55,0.5;world_configure;".. fgettext("Configure") .. "]" ..
+			"button[4,3.95;2.6,1;world_delete;".. fgettext("Delete") .. "]" ..
+			"button[6.5,3.95.15;2.8,1;world_create;".. fgettext("New") .. "]" ..
+			"button[9.2,3.95;2.5,1;world_configure;".. fgettext("Configure") .. "]" ..
 			"label[4,-0.25;".. fgettext("Select World:") .. "]"..
 			"checkbox[0.25,0.25;cb_creative_mode;".. fgettext("Creative Mode") .. ";" ..
 			dump(core.settings:get_bool("creative_mode")) .. "]"..
@@ -109,7 +109,7 @@ local function get_formspec(tabview, name, tabdata)
 
 	if core.settings:get_bool("enable_server") then
 		retval = retval ..
-				"button[8.5,5;3.25,0.5;play;".. fgettext("Host Game") .. "]" ..
+				"button[8.5,4.8;3.2,1;play;".. fgettext("Host Game") .. "]" ..
 				"checkbox[0.25,1.6;cb_server_announce;" .. fgettext("Announce Server") .. ";" ..
 				dump(core.settings:get_bool("server_announce")) .. "]" ..
 				"label[0.25,2.2;" .. fgettext("Name/Password") .. "]" ..
@@ -131,7 +131,7 @@ local function get_formspec(tabview, name, tabdata)
 		end
 	else
 		retval = retval ..
-				"button[8.5,5;3.25,0.5;play;".. fgettext("Play Game") .. "]"
+				"button[8.5,4.8;3.2,1;play;".. fgettext("Play Game") .. "]"
 	end
 
 	return retval
@@ -213,7 +213,7 @@ local function main_button_handler(this, fields, name, tabdata)
 				--update last game
 				local world = menudata.worldlist:get_raw_element(gamedata.selected_world)
 				if world then
-					local game, index = gamemgr.find_by_gameid(world.gameid)
+					local game, index = pkgmgr.find_by_gameid(world.gameid)
 					core.settings:set("menu_last_game", game.id)
 				end
 
@@ -310,7 +310,7 @@ end
 --------------------------------------------------------------------------------
 return {
 	name = "local",
-	caption = fgettext("Local Game"),
+	caption = fgettext("Start Game"),
 	cbf_formspec = get_formspec,
 	cbf_button_handler = main_button_handler,
 	on_change = on_change

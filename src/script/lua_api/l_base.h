@@ -17,8 +17,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef L_BASE_H_
-#define L_BASE_H_
+#pragma once
 
 #include "common/c_types.h"
 #include "common/c_internal.h"
@@ -30,7 +29,7 @@ extern "C" {
 }
 
 #ifndef SERVER
-#include "client.h"
+class Client;
 #endif
 
 class ScriptApiBase;
@@ -70,6 +69,17 @@ public:
 			const char* name,
 			lua_CFunction func,
 			int top);
-};
 
-#endif /* L_BASE_H_ */
+	static bool isNaN(lua_State *L, int idx);
+
+	/**
+	 * Read a value using a template type T from Lua State L and index
+	 *
+	 * @tparam T type to read from Lua
+	 * @param L Lua state
+	 * @param index Lua Index to read
+	 * @return read value from Lua
+	 */
+	template<typename T>
+	static T readParam(lua_State *L, int index);
+};

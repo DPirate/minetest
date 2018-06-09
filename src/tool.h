@@ -17,13 +17,13 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef TOOL_HEADER
-#define TOOL_HEADER
+#pragma once
 
 #include "irrlichttypes.h"
 #include <string>
 #include <iostream>
 #include "itemgroup.h"
+#include <json/json.h>
 
 struct ToolGroupCap
 {
@@ -31,7 +31,7 @@ struct ToolGroupCap
 	int maxlevel = 1;
 	int uses = 20;
 
-	ToolGroupCap() {}
+	ToolGroupCap() = default;
 
 	bool getTime(int rating, float *time) const
 	{
@@ -43,6 +43,9 @@ struct ToolGroupCap
 		*time = i->second;
 		return true;
 	}
+
+	void toJson(Json::Value &object) const;
+	void fromJson(const Json::Value &json);
 };
 
 
@@ -70,6 +73,8 @@ struct ToolCapabilities
 
 	void serialize(std::ostream &os, u16 version) const;
 	void deSerialize(std::istream &is);
+	void serializeJson(std::ostream &os) const;
+	void deserializeJson(std::istream &is);
 };
 
 struct DigParams
@@ -89,9 +94,6 @@ struct DigParams
 		main_group(a_main_group)
 	{}
 };
-
-DigParams getDigParams(const ItemGroupList &groups,
-		const ToolCapabilities *tp, float time_from_last_punch);
 
 DigParams getDigParams(const ItemGroupList &groups,
 		const ToolCapabilities *tp);
@@ -119,7 +121,7 @@ struct PunchDamageResult
 	int damage = 0;
 	int wear = 0;
 
-	PunchDamageResult() {}
+	PunchDamageResult() = default;
 };
 
 struct ItemStack;
@@ -130,6 +132,3 @@ PunchDamageResult getPunchDamage(
 		const ItemStack *punchitem,
 		float time_from_last_punch
 );
-
-#endif
-

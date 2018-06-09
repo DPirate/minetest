@@ -17,8 +17,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef MT_CHATMESSAGE_H
-#define MT_CHATMESSAGE_H
+#pragma once
 
 #include <string>
 #include <ctime>
@@ -37,8 +36,9 @@ struct ChatMessage
 	ChatMessage(const std::wstring &m = L"") : message(m) {}
 
 	ChatMessage(ChatMessageType t, const std::wstring &m, const std::wstring &s = L"",
-			std::time_t ts = std::time(0))
-	    : type(t), message(m), sender(s), timestamp(ts)
+			std::time_t ts = std::time(0)) :
+			type(t),
+			message(m), sender(s), timestamp(ts)
 	{
 	}
 
@@ -47,5 +47,3 @@ struct ChatMessage
 	std::wstring sender = L"";
 	std::time_t timestamp = std::time(0);
 };
-
-#endif

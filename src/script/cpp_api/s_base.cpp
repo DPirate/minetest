@@ -24,7 +24,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "common/c_converter.h"
 #include "serverobject.h"
 #include "filesys.h"
-#include "mods.h"
+#include "content/mods.h"
 #include "porting.h"
 #include "util/string.h"
 #include "server.h"
@@ -40,9 +40,10 @@ extern "C" {
 #endif
 }
 
-#include <stdio.h>
+#include <cstdio>
 #include <cstdarg>
 #include "script/common/c_content.h"
+#include "content_sao.h"
 #include <sstream>
 
 
@@ -71,7 +72,8 @@ public:
 	ScriptApiBase
 */
 
-ScriptApiBase::ScriptApiBase()
+ScriptApiBase::ScriptApiBase(ScriptingType type):
+		m_type(type)
 {
 #ifdef SCRIPTAPI_LOCK_DEBUG
 	m_lock_recursion_count = 0;
@@ -82,7 +84,10 @@ ScriptApiBase::ScriptApiBase()
 
 	lua_atpanic(m_luastack, &luaPanic);
 
-	luaL_openlibs(m_luastack);
+	if (m_type == ScriptingType::Client)
+		clientOpenLibs(m_luastack);
+	else
+		luaL_openlibs(m_luastack);
 
 	// Make the ScriptApiBase* accessible to ModApiBase
 	lua_pushlightuserdata(m_luastack, this);
@@ -106,11 +111,17 @@ ScriptApiBase::ScriptApiBase()
 	lua_newtable(m_luastack);
 	lua_setglobal(m_luastack, "core");
 
-	lua_pushstring(m_luastack, DIR_DELIM);
+	if (m_type == ScriptingType::Client)
+		lua_pushstring(m_luastack, "/");
+	else
+		lua_pushstring(m_luastack, DIR_DELIM);
 	lua_setglobal(m_luastack, "DIR_DELIM");
 
 	lua_pushstring(m_luastack, porting::getPlatformName());
 	lua_setglobal(m_luastack, "PLATFORM");
+
+	// Make sure Lua uses the right locale
+	setlocale(LC_NUMERIC, "C");
 }
 
 ScriptApiBase::~ScriptApiBase()
@@ -126,6 +137,27 @@ int ScriptApiBase::luaPanic(lua_State *L)
 	FATAL_ERROR(oss.str().c_str());
 	// NOTREACHED
 	return 0;
+}
+
+void ScriptApiBase::clientOpenLibs(lua_State *L)
+{
+	static const std::vector<std::pair<std::string, lua_CFunction>> m_libs = {
+		{ "", luaopen_base },
+		{ LUA_TABLIBNAME,  luaopen_table   },
+		{ LUA_OSLIBNAME,   luaopen_os      },
+		{ LUA_STRLIBNAME,  luaopen_string  },
+		{ LUA_MATHLIBNAME, luaopen_math    },
+		{ LUA_DBLIBNAME,   luaopen_debug   },
+#if USE_LUAJIT
+		{ LUA_JITLIBNAME,  luaopen_jit     },
+#endif
+	};
+
+	for (const std::pair<std::string, lua_CFunction> &lib : m_libs) {
+	    lua_pushcfunction(L, lib.second);
+	    lua_pushstring(L, lib.first.c_str());
+	    lua_call(L, 1, 0);
+	}
 }
 
 void ScriptApiBase::loadMod(const std::string &script_path,
@@ -343,6 +375,30 @@ void ScriptApiBase::objectrefGetOrCreate(lua_State *L,
 		ObjectRef::create(L, cobj);
 	} else {
 		push_objectRef(L, cobj->getId());
+		if (cobj->isGone())
+			warningstream << "ScriptApiBase::objectrefGetOrCreate(): "
+					<< "Pushing ObjectRef to removed/deactivated object"
+					<< ", this is probably a bug." << std::endl;
+	}
+}
+
+void ScriptApiBase::pushPlayerHPChangeReason(lua_State *L, const PlayerHPChangeReason &reason)
+{
+	if (reason.lua_reference >= 0) {
+		lua_rawgeti(L, LUA_REGISTRYINDEX, reason.lua_reference);
+		luaL_unref(L, LUA_REGISTRYINDEX, reason.lua_reference);
+	} else
+		lua_newtable(L);
+
+	lua_pushstring(L, reason.getTypeAsString().c_str());
+	lua_setfield(L, -2, "type");
+
+	lua_pushstring(L, reason.from_mod ? "mod" : "engine");
+	lua_setfield(L, -2, "from");
+
+	if (reason.object) {
+		objectrefGetOrCreate(L, reason.object);
+		lua_setfield(L, -2, "object");
 	}
 }
 

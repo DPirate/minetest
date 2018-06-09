@@ -17,21 +17,27 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#include "mainmenumanager.h"
+#include "gui/mainmenumanager.h"
 #include "clouds.h"
 #include "server.h"
 #include "filesys.h"
-#include "guiMainMenu.h"
+#include "gui/guiMainMenu.h"
 #include "game.h"
+#include "player.h"
 #include "chat.h"
 #include "gettext.h"
 #include "profiler.h"
 #include "serverlist.h"
-#include "guiEngine.h"
+#include "gui/guiEngine.h"
 #include "fontengine.h"
 #include "clientlauncher.h"
 #include "version.h"
 #include "renderingengine.h"
+#include "network/networkexceptions.h"
+
+#if USE_SOUND
+	#include "sound_openal.h"
+#endif
 
 /* mainmenumanager.h
  */
@@ -58,6 +64,10 @@ ClientLauncher::~ClientLauncher()
 	delete g_gamecallback;
 
 	delete RenderingEngine::get_instance();
+
+#if USE_SOUND
+	g_sound_manager_singleton.reset();
+#endif
 }
 
 
@@ -68,6 +78,11 @@ bool ClientLauncher::run(GameParams &game_params, const Settings &cmd_args)
 	// List video modes if requested
 	if (list_video_modes)
 		return RenderingEngine::print_video_modes();
+
+#if USE_SOUND
+	if (g_settings->getBool("enable_sound"))
+		g_sound_manager_singleton = createSoundManagerSingleton();
+#endif
 
 	if (!init_engine()) {
 		errorstream << "Could not initialize game engine." << std::endl;
@@ -128,11 +143,11 @@ bool ClientLauncher::run(GameParams &game_params, const Settings &cmd_args)
 	if (!g_menucloudsmgr)
 		g_menucloudsmgr = RenderingEngine::get_scene_manager()->createNewSceneManager();
 	if (!g_menuclouds)
-		g_menuclouds = new Clouds(g_menucloudsmgr, -1, rand(), 100);
+		g_menuclouds = new Clouds(g_menucloudsmgr, -1, rand());
+	g_menuclouds->setHeight(100.0f);
 	g_menuclouds->update(v3f(0, 0, 0), video::SColor(255, 200, 200, 255));
 	scene::ICameraSceneNode* camera;
-	camera = g_menucloudsmgr->addCameraSceneNode(0,
-				v3f(0, 0, 0), v3f(0, 60, 100));
+	camera = g_menucloudsmgr->addCameraSceneNode(NULL, v3f(0, 0, 0), v3f(0, 60, 100));
 	camera->setFarValue(10000);
 
 	/*
@@ -191,13 +206,13 @@ bool ClientLauncher::run(GameParams &game_params, const Settings &cmd_args)
 			if (!game_has_run) {
 				if (skip_main_menu)
 					break;
-				else
-					continue;
+
+				continue;
 			}
 
 			// Break out of menu-game loop to shut down cleanly
 			if (!RenderingEngine::get_raw_device()->run() || *kill) {
-				if (g_settings_path != "")
+				if (!g_settings_path.empty())
 					g_settings->updateConfigFile(g_settings_path.c_str());
 				break;
 			}
@@ -213,7 +228,7 @@ bool ClientLauncher::run(GameParams &game_params, const Settings &cmd_args)
 					video::ETCF_CREATE_MIP_MAPS, g_settings->getBool("mip_map"));
 
 #ifdef HAVE_TOUCHSCREENGUI
-			receiver->m_touchscreengui = new TouchScreenGUI(device, receiver);
+			receiver->m_touchscreengui = new TouchScreenGUI(RenderingEngine::get_raw_device(), receiver);
 			g_touchscreengui = receiver->m_touchscreengui;
 #endif
 
@@ -284,7 +299,7 @@ void ClientLauncher::init_args(GameParams &game_params, const Settings &cmd_args
 	 * supplied on the command line
 	 */
 	address = g_settings->get("address");
-	if (game_params.world_path != "" && !skip_main_menu)
+	if (!game_params.world_path.empty() && !skip_main_menu)
 		address = "";
 	else if (cmd_args.exists("address"))
 		address = cmd_args.get("address");
@@ -354,11 +369,11 @@ bool ClientLauncher::launch_game(std::string &error_message,
 		menudata.password = cmd_args.get("password");
 
 	// If a world was commanded, append and select it
-	if (game_params.world_path != "") {
+	if (!game_params.world_path.empty()) {
 		worldspec.gameid = getWorldGameId(game_params.world_path, true);
 		worldspec.name = _("[--world parameter]");
 
-		if (worldspec.gameid == "") {	// Create new
+		if (worldspec.gameid.empty()) {	// Create new
 			worldspec.gameid = g_settings->get("default_game");
 			worldspec.name += " [new]";
 		}
@@ -399,8 +414,9 @@ bool ClientLauncher::launch_game(std::string &error_message,
 		return false;
 	}
 
-	if (menudata.name == "" && !simple_singleplayer_mode) {
+	if (menudata.name.empty() && !simple_singleplayer_mode) {
 		error_message = gettext("Please choose a name!");
+		errorstream << error_message << std::endl;
 		return false;
 	}
 
@@ -414,14 +430,14 @@ bool ClientLauncher::launch_game(std::string &error_message,
 
 	// If using simple singleplayer mode, override
 	if (simple_singleplayer_mode) {
-		assert(skip_main_menu == false);
+		assert(!skip_main_menu);
 		current_playername = "singleplayer";
 		current_password = "";
 		current_address = "";
 		current_port = myrand_range(49152, 65535);
 	} else {
 		g_settings->set("name", playername);
-		if (address != "") {
+		if (!address.empty()) {
 			ServerListSpec server;
 			server["name"] = menudata.servername;
 			server["address"] = menudata.address;
@@ -434,8 +450,8 @@ bool ClientLauncher::launch_game(std::string &error_message,
 	infostream << "Selected world: " << worldspec.name
 	           << " [" << worldspec.path << "]" << std::endl;
 
-	if (current_address == "") { // If local game
-		if (worldspec.path == "") {
+	if (current_address.empty()) { // If local game
+		if (worldspec.path.empty()) {
 			error_message = gettext("No world selected and no address "
 					"provided. Nothing to do.");
 			errorstream << error_message << std::endl;
@@ -486,7 +502,7 @@ void ClientLauncher::main_menu(MainMenuData *menudata)
 	video::IVideoDriver *driver = RenderingEngine::get_video_driver();
 
 	infostream << "Waiting for other menus" << std::endl;
-	while (RenderingEngine::get_raw_device()->run() && *kill == false) {
+	while (RenderingEngine::get_raw_device()->run() && !*kill) {
 		if (!isMenuActive())
 			break;
 		driver->beginScene(true, true, video::SColor(255, 128, 128, 128));

@@ -39,7 +39,7 @@ core.register_entity(":__builtin:falling_node", {
 
 	on_activate = function(self, staticdata)
 		self.object:set_armor_groups({immortal = 1})
-		
+
 		local ds = core.deserialize(staticdata)
 		if ds and ds.node then
 			self:set_node(ds.node, ds.meta)
@@ -60,8 +60,13 @@ core.register_entity(":__builtin:falling_node", {
 		local pos = self.object:getpos()
 		-- Position of bottom center point
 		local bcp = {x = pos.x, y = pos.y - 0.7, z = pos.z}
-		-- Avoid bugs caused by an unloaded node below
+		-- 'bcn' is nil for unloaded nodes
 		local bcn = core.get_node_or_nil(bcp)
+		-- Delete on contact with ignore at world edges
+		if bcn and bcn.name == "ignore" then
+			self.object:remove()
+			return
+		end
 		local bcd = bcn and core.registered_nodes[bcn.name]
 		if bcn and
 				(not bcd or bcd.walkable or
@@ -104,11 +109,15 @@ core.register_entity(":__builtin:falling_node", {
 				end
 			end
 			-- Create node and remove entity
-			if core.registered_nodes[self.node.name] then
+			local def = core.registered_nodes[self.node.name]
+			if def then
 				core.add_node(np, self.node)
 				if self.meta then
 					local meta = core.get_meta(np)
 					meta:from_table(self.meta)
+				end
+				if def.sounds and def.sounds.place and def.sounds.place.name then
+					core.sound_play(def.sounds.place, {pos = np})
 				end
 			end
 			self.object:remove()
@@ -146,8 +155,22 @@ end
 
 local function drop_attached_node(p)
 	local n = core.get_node(p)
+	local drops = core.get_node_drops(n, "")
+	local def = core.registered_items[n.name]
+	if def and def.preserve_metadata then
+		local oldmeta = core.get_meta(p):to_table().fields
+		-- Copy pos and node because the callback can modify them.
+		local pos_copy = {x=p.x, y=p.y, z=p.z}
+		local node_copy = {name=n.name, param1=n.param1, param2=n.param2}
+		local drop_stacks = {}
+		for k, v in pairs(drops) do
+			drop_stacks[k] = ItemStack(v)
+		end
+		drops = drop_stacks
+		def.preserve_metadata(pos_copy, node_copy, oldmeta, drops)
+	end
 	core.remove_node(p)
-	for _, item in pairs(core.get_node_drops(n, "")) do
+	for _, item in pairs(drops) do
 		local pos = {
 			x = p.x + math.random()/2 - 0.25,
 			y = p.y + math.random()/2 - 0.25,
@@ -308,19 +331,3 @@ local function on_punchnode(p, node)
 	core.check_for_falling(p)
 end
 core.register_on_punchnode(on_punchnode)
-
---
--- Globally exported functions
---
-
--- TODO remove this function after the 0.4.15 release
-function nodeupdate(p)
-	core.log("deprecated", "nodeupdate: deprecated, please use core.check_for_falling instead")
-	core.check_for_falling(p)
-end
-
--- TODO remove this function after the 0.4.15 release
-function nodeupdate_single(p)
-	core.log("deprecated", "nodeupdate_single: deprecated, please use core.check_single_for_falling instead")
-	core.check_single_for_falling(p)
-end

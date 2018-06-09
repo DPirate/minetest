@@ -41,7 +41,7 @@ local function render_client_count(n)
 end
 
 local function configure_selected_world_params(idx)
-	local worldconfig = modmgr.get_worldconfig(menudata.worldlist:get_list()[idx].path)
+	local worldconfig = pkgmgr.get_worldconfig(menudata.worldlist:get_list()[idx].path)
 	if worldconfig.creative_mode then
 		core.settings:set("creative_mode", worldconfig.creative_mode)
 	end
@@ -172,14 +172,9 @@ os.tempfolder = function()
 	os.remove(filetocheck)
 
 	local randname = "MTTempModFolder_" .. math.random(0,10000)
-	if DIR_DELIM == "\\" then
-		local tempfolder = os.getenv("TEMP")
-		return tempfolder .. filetocheck
-	else
-		local backstring = filetocheck:reverse()
-		return filetocheck:sub(0,filetocheck:len()-backstring:find(DIR_DELIM)+1) ..randname
-	end
-
+	local backstring = filetocheck:reverse()
+	return filetocheck:sub(0, filetocheck:len() - backstring:find(DIR_DELIM) + 1) ..
+		randname
 end
 
 --------------------------------------------------------------------------------
@@ -250,7 +245,7 @@ end
 
 --------------------------------------------------------------------------------
 function text2textlist(xpos, ypos, width, height, tl_name, textlen, text, transparency)
-	local textlines = core.wrap_text(text, textlen)
+	local textlines = core.wrap_text(text, textlen, true)
 	local retval = "textlist[" .. xpos .. "," .. ypos .. ";" .. width ..
 			"," .. height .. ";" .. tl_name .. ";"
 

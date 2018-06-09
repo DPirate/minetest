@@ -1,3 +1,22 @@
+/*
+Minetest
+Copyright (C) 2010-2013 celeron55, Perttu Ahola <celeron55@gmail.com>
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU Lesser General Public License as published by
+the Free Software Foundation; either version 2.1 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Lesser General Public License for more details.
+
+You should have received a copy of the GNU Lesser General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
 #include "sky.h"
 #include "IVideoDriver.h"
 #include "ISceneManager.h"
@@ -68,13 +87,13 @@ Sky::Sky(s32 id, ITextureSource *tsrc):
 			m_materials[4].Lighting = true;
 	}
 
-	for (u32 i = 0; i < SKY_STAR_COUNT; i++) {
-		m_stars[i] = v3f(
+	for (v3f &star : m_stars) {
+		star = v3f(
 			myrand_range(-10000, 10000),
 			myrand_range(-10000, 10000),
 			myrand_range(-10000, 10000)
 		);
-		m_stars[i].normalize();
+		star.normalize();
 	}
 
 	m_directional_colored_fog = g_settings->getBool("directional_colored_fog");
@@ -118,10 +137,14 @@ void Sky::render()
 	if (m_sunlight_seen) {
 		float sunsize = 0.07;
 		video::SColorf suncolor_f(1, 1, 0, 1);
-		suncolor_f.r = 1;
-		suncolor_f.g = MYMAX(0.3, MYMIN(1.0, 0.7 + m_time_brightness * 0.5));
-		suncolor_f.b = MYMAX(0.0, m_brightness * 0.95);
+		//suncolor_f.r = 1;
+		//suncolor_f.g = MYMAX(0.3, MYMIN(1.0, 0.7 + m_time_brightness * 0.5));
+		//suncolor_f.b = MYMAX(0.0, m_brightness * 0.95);
 		video::SColorf suncolor2_f(1, 1, 1, 1);
+		// The values below were probably meant to be suncolor2_f instead of a
+		// reassignment of suncolor_f. However, the resulting colour was chosen
+		// and is our long-running classic colour. So preserve, but comment-out
+		// the unnecessary first assignments above.
 		suncolor_f.r = 1;
 		suncolor_f.g = MYMAX(0.3, MYMIN(1.0, 0.85 + m_time_brightness * 0.5));
 		suncolor_f.b = MYMAX(0.0, m_brightness);
@@ -184,19 +207,19 @@ void Sky::render()
 			vertices[1] = video::S3DVertex( 1, 0.08, -1, 0, 0, 1, c, o, t);
 			vertices[2] = video::S3DVertex( 1, 0.12, -1, 0, 0, 1, c, o, o);
 			vertices[3] = video::S3DVertex(-1, 0.12, -1, 0, 0, 1, c, t, o);
-			for (u32 i = 0; i < 4; i++) {
+			for (video::S3DVertex &vertex : vertices) {
 				if (j == 0)
 					// Don't switch
 					{}
 				else if (j == 1)
 					// Switch from -Z (south) to +X (east)
-					vertices[i].Pos.rotateXZBy(90);
+					vertex.Pos.rotateXZBy(90);
 				else if (j == 2)
 					// Switch from -Z (south) to -X (west)
-					vertices[i].Pos.rotateXZBy(-90);
+					vertex.Pos.rotateXZBy(-90);
 				else
 					// Switch from -Z (south) to +Z (north)
-					vertices[i].Pos.rotateXZBy(-180);
+					vertex.Pos.rotateXZBy(-180);
 			}
 			driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 		}
@@ -208,19 +231,19 @@ void Sky::render()
 			vertices[1] = video::S3DVertex( 1, -1.0, -1, 0, 0, 1, c, o, t);
 			vertices[2] = video::S3DVertex( 1, 0.08, -1, 0, 0, 1, c, o, o);
 			vertices[3] = video::S3DVertex(-1, 0.08, -1, 0, 0, 1, c, t, o);
-			for (u32 i = 0; i < 4; i++) {
+			for (video::S3DVertex &vertex : vertices) {
 				if (j == 0)
 					// Don't switch
 					{}
 				else if (j == 1)
 					// Switch from -Z (south) to +X (east)
-					vertices[i].Pos.rotateXZBy(90);
+					vertex.Pos.rotateXZBy(90);
 				else if (j == 2)
 					// Switch from -Z (south) to -X (west)
-					vertices[i].Pos.rotateXZBy(-90);
+					vertex.Pos.rotateXZBy(-90);
 				else
 					// Switch from -Z (south) to +Z (north)
-					vertices[i].Pos.rotateXZBy(-180);
+					vertex.Pos.rotateXZBy(-180);
 			}
 			driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 		}
@@ -243,7 +266,7 @@ void Sky::render()
 		{
 			float mid1 = 0.25;
 			float mid = wicked_time_of_day < 0.5 ? mid1 : (1.0 - mid1);
-			float a_ = 1.0 - fabs(wicked_time_of_day - mid) * 35.0;
+			float a_ = 1.0f - std::fabs(wicked_time_of_day - mid) * 35.0f;
 			float a = easeCurve(MYMAX(0, MYMIN(1, a_)));
 			//std::cerr<<"a_="<<a_<<" a="<<a<<std::endl;
 			video::SColor c(255, 255, 255, 255);
@@ -252,13 +275,13 @@ void Sky::render()
 			vertices[1] = video::S3DVertex( 1, -0.05 + y, -1, 0, 0, 1, c, o, t);
 			vertices[2] = video::S3DVertex( 1,   0.2 + y, -1, 0, 0, 1, c, o, o);
 			vertices[3] = video::S3DVertex(-1,   0.2 + y, -1, 0, 0, 1, c, t, o);
-			for (u32 i = 0; i < 4; i++) {
+			for (video::S3DVertex &vertex : vertices) {
 				if (wicked_time_of_day < 0.5)
 					// Switch from -Z (south) to +X (east)
-					vertices[i].Pos.rotateXZBy(90);
+					vertex.Pos.rotateXZBy(90);
 				else
 					// Switch from -Z (south) to -X (west)
-					vertices[i].Pos.rotateXZBy(-90);
+					vertex.Pos.rotateXZBy(-90);
 			}
 			driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 		}
@@ -274,10 +297,10 @@ void Sky::render()
 				vertices[1] = video::S3DVertex( d, -d, -1, 0, 0, 1, c, o, t);
 				vertices[2] = video::S3DVertex( d,  d, -1, 0, 0, 1, c, o, o);
 				vertices[3] = video::S3DVertex(-d,  d, -1, 0, 0, 1, c, t, o);
-				for (u32 i = 0; i < 4; i++) {
+				for (video::S3DVertex &vertex : vertices) {
 					// Switch from -Z (south) to +X (east)
-					vertices[i].Pos.rotateXZBy(90);
-					vertices[i].Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
+					vertex.Pos.rotateXZBy(90);
+					vertex.Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
 				}
 				driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 
@@ -288,10 +311,10 @@ void Sky::render()
 				vertices[1] = video::S3DVertex( d, -d, -1, 0, 0, 1, c, o, t);
 				vertices[2] = video::S3DVertex( d,  d, -1, 0, 0, 1, c, o, o);
 				vertices[3] = video::S3DVertex(-d,  d, -1, 0, 0, 1, c, t, o);
-				for (u32 i = 0; i < 4; i++) {
+				for (video::S3DVertex &vertex : vertices) {
 					// Switch from -Z (south) to +X (east)
-					vertices[i].Pos.rotateXZBy(90);
-					vertices[i].Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
+					vertex.Pos.rotateXZBy(90);
+					vertex.Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
 				}
 				driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 
@@ -300,10 +323,10 @@ void Sky::render()
 				vertices[1] = video::S3DVertex( d, -d, -1, 0, 0, 1, suncolor, o, t);
 				vertices[2] = video::S3DVertex( d,  d, -1, 0, 0, 1, suncolor, o, o);
 				vertices[3] = video::S3DVertex(-d,  d, -1, 0, 0, 1, suncolor, t, o);
-				for (u32 i = 0; i < 4; i++) {
+				for (video::S3DVertex &vertex : vertices) {
 					// Switch from -Z (south) to +X (east)
-					vertices[i].Pos.rotateXZBy(90);
-					vertices[i].Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
+					vertex.Pos.rotateXZBy(90);
+					vertex.Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
 				}
 				driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 
@@ -312,10 +335,10 @@ void Sky::render()
 				vertices[1] = video::S3DVertex( d, -d, -1, 0, 0, 1, suncolor2, o, t);
 				vertices[2] = video::S3DVertex( d,  d, -1, 0, 0, 1, suncolor2, o, o);
 				vertices[3] = video::S3DVertex(-d,  d, -1, 0, 0, 1, suncolor2, t, o);
-				for (u32 i = 0; i < 4; i++) {
+				for (video::S3DVertex &vertex : vertices) {
 					// Switch from -Z (south) to +X (east)
-					vertices[i].Pos.rotateXZBy(90);
-					vertices[i].Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
+					vertex.Pos.rotateXZBy(90);
+					vertex.Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
 				}
 				driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 			} else {
@@ -330,10 +353,10 @@ void Sky::render()
 				vertices[1] = video::S3DVertex( d, -d, -1, 0, 0, 1, c, o, t);
 				vertices[2] = video::S3DVertex( d,  d, -1, 0, 0, 1, c, o, o);
 				vertices[3] = video::S3DVertex(-d,  d, -1, 0, 0, 1, c, t, o);
-				for(u32 i = 0; i < 4; i++) {
+				for (video::S3DVertex &vertex : vertices) {
 					// Switch from -Z (south) to +X (east)
-					vertices[i].Pos.rotateXZBy(90);
-					vertices[i].Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
+					vertex.Pos.rotateXZBy(90);
+					vertex.Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
 				}
 				driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 			}
@@ -350,10 +373,10 @@ void Sky::render()
 				vertices[1] = video::S3DVertex( d, -d, -1, 0, 0, 1, c, o, t);
 				vertices[2] = video::S3DVertex( d,  d, -1, 0, 0, 1, c, o, o);
 				vertices[3] = video::S3DVertex(-d,  d, -1, 0, 0, 1, c, t, o);
-				for (u32 i = 0; i < 4; i++) {
+				for (video::S3DVertex &vertex : vertices) {
 					// Switch from -Z (south) to -X (west)
-					vertices[i].Pos.rotateXZBy(-90);
-					vertices[i].Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
+					vertex.Pos.rotateXZBy(-90);
+					vertex.Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
 				}
 				driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 
@@ -364,10 +387,10 @@ void Sky::render()
 				vertices[1] = video::S3DVertex( d, -d, -1, 0, 0, 1, c, o, t);
 				vertices[2] = video::S3DVertex( d,  d, -1, 0, 0, 1, c, o, o);
 				vertices[3] = video::S3DVertex(-d,  d, -1, 0, 0, 1, c, t, o);
-				for (u32 i = 0; i < 4; i++) {
+				for (video::S3DVertex &vertex : vertices) {
 					// Switch from -Z (south) to -X (west)
-					vertices[i].Pos.rotateXZBy(-90);
-					vertices[i].Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
+					vertex.Pos.rotateXZBy(-90);
+					vertex.Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
 				}
 				driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 
@@ -376,10 +399,10 @@ void Sky::render()
 				vertices[1] = video::S3DVertex( d, -d, -1, 0, 0, 1, mooncolor, o, t);
 				vertices[2] = video::S3DVertex( d,  d, -1, 0, 0, 1, mooncolor, o, o);
 				vertices[3] = video::S3DVertex(-d,  d, -1, 0, 0, 1, mooncolor, t, o);
-				for (u32 i = 0; i < 4; i++) {
+				for (video::S3DVertex &vertex : vertices) {
 					// Switch from -Z (south) to -X (west)
-					vertices[i].Pos.rotateXZBy(-90);
-					vertices[i].Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
+					vertex.Pos.rotateXZBy(-90);
+					vertex.Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
 				}
 				driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 
@@ -388,10 +411,10 @@ void Sky::render()
 				vertices[1] = video::S3DVertex( d2,-d,  -1, 0, 0, 1, mooncolor2, o, t);
 				vertices[2] = video::S3DVertex( d2, d2, -1, 0, 0, 1, mooncolor2, o, o);
 				vertices[3] = video::S3DVertex(-d,  d2, -1, 0, 0, 1, mooncolor2, t, o);
-				for (u32 i = 0; i < 4; i++) {
+				for (video::S3DVertex &vertex : vertices) {
 					// Switch from -Z (south) to -X (west)
-					vertices[i].Pos.rotateXZBy(-90);
-					vertices[i].Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
+					vertex.Pos.rotateXZBy(-90);
+					vertex.Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
 				}
 				driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 			} else {
@@ -406,10 +429,10 @@ void Sky::render()
 				vertices[1] = video::S3DVertex( d, -d, -1, 0, 0, 1, c, o, t);
 				vertices[2] = video::S3DVertex( d,  d, -1, 0, 0, 1, c, o, o);
 				vertices[3] = video::S3DVertex(-d,  d, -1, 0, 0, 1, c, t, o);
-				for (u32 i = 0; i < 4; i++) {
+				for (video::S3DVertex &vertex : vertices) {
 					// Switch from -Z (south) to -X (west)
-					vertices[i].Pos.rotateXZBy(-90);
-					vertices[i].Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
+					vertex.Pos.rotateXZBy(-90);
+					vertex.Pos.rotateXYBy(wicked_time_of_day * 360 - 90);
 				}
 				driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 			}
@@ -460,7 +483,7 @@ void Sky::render()
 			driver->drawVertexPrimitiveList(vertices, SKY_STAR_COUNT * 4,
 				indices, SKY_STAR_COUNT, video::EVT_STANDARD,
 				scene::EPT_QUADS, video::EIT_16BIT);
-		} while(0);
+		} while(false);
 
 		// Draw far cloudy fog thing below east and west horizons
 		for (u32 j = 0; j < 2; j++) {
@@ -469,14 +492,14 @@ void Sky::render()
 			vertices[1] = video::S3DVertex( 1, -1.0,  -1, 0, 0, 1, c, o, t);
 			vertices[2] = video::S3DVertex( 1, -0.02, -1, 0, 0, 1, c, o, o);
 			vertices[3] = video::S3DVertex(-1, -0.02, -1, 0, 0, 1, c, t, o);
-			for (u32 i = 0; i < 4; i++) {
+			for (video::S3DVertex &vertex : vertices) {
 				//if (wicked_time_of_day < 0.5)
 				if (j == 0)
 					// Switch from -Z (south) to +X (east)
-					vertices[i].Pos.rotateXZBy(90);
+					vertex.Pos.rotateXZBy(90);
 				else
 					// Switch from -Z (south) to -X (west)
-					vertices[i].Pos.rotateXZBy(-90);
+					vertex.Pos.rotateXZBy(-90);
 			}
 			driver->drawIndexedTriangleFan(&vertices[0], 4, indices, 2);
 		}
@@ -539,7 +562,7 @@ void Sky::update(float time_of_day, float time_brightness,
 
 	float cloud_color_change_fraction = 0.95;
 	if (sunlight_seen) {
-		if (fabs(time_brightness - m_brightness) < 0.2) {
+		if (std::fabs(time_brightness - m_brightness) < 0.2f) {
 			m_brightness = m_brightness * 0.95 + time_brightness * 0.05;
 		} else {
 			m_brightness = m_brightness * 0.80 + time_brightness * 0.20;

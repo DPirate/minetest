@@ -17,8 +17,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef VOXELALGORITHMS_HEADER
-#define VOXELALGORITHMS_HEADER
+#pragma once
 
 #include "voxel.h"
 #include "mapnode.h"
@@ -31,30 +30,6 @@ class MMVManip;
 
 namespace voxalgo
 {
-
-// TODO: Move unspreadLight and spreadLight from VoxelManipulator to here
-
-void setLight(VoxelManipulator &v, VoxelArea a, u8 light,
-		INodeDefManager *ndef);
-
-void clearLightAndCollectSources(VoxelManipulator &v, VoxelArea a,
-		enum LightBank bank, INodeDefManager *ndef,
-		std::set<v3s16> & light_sources,
-		std::map<v3s16, u8> & unlight_from);
-
-struct SunlightPropagateResult
-{
-	bool bottom_sunlight_valid;
-
-	SunlightPropagateResult(bool bottom_sunlight_valid_):
-		bottom_sunlight_valid(bottom_sunlight_valid_)
-	{}
-};
-
-SunlightPropagateResult propagateSunlight(VoxelManipulator &v, VoxelArea a,
-		bool inexistent_top_provides_sunlight,
-		std::set<v3s16> & light_sources,
-		INodeDefManager *ndef);
 
 /*!
  * Updates the lighting on the map.
@@ -180,8 +155,3 @@ public:
 };
 
 } // namespace voxalgo
-
-
-
-#endif
-

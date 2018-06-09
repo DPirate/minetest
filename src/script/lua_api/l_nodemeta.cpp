@@ -23,6 +23,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "common/c_content.h"
 #include "serverenvironment.h"
 #include "map.h"
+#include "mapblock.h"
 #include "server.h"
 
 /*
@@ -158,7 +159,7 @@ bool NodeMetaRef::handleFromTable(lua_State *L, int table, Metadata *_meta)
 		lua_pushnil(L);
 		while (lua_next(L, inventorytable) != 0) {
 			// key at index -2 and value at index -1
-			std::string name = lua_tostring(L, -2);
+			std::string name = luaL_checkstring(L, -2);
 			read_inventory_list(L, -1, inv, name.c_str(), getServer(L));
 			lua_pop(L, 1); // Remove value, keep key for next iteration
 		}
@@ -178,10 +179,6 @@ NodeMetaRef::NodeMetaRef(v3s16 p, ServerEnvironment *env):
 NodeMetaRef::NodeMetaRef(Metadata *meta):
 	m_meta(meta),
 	m_is_local(true)
-{
-}
-
-NodeMetaRef::~NodeMetaRef()
 {
 }
 
@@ -245,6 +242,8 @@ void NodeMetaRef::Register(lua_State *L)
 
 
 const luaL_Reg NodeMetaRef::methodsServer[] = {
+	luamethod(MetaDataRef, contains),
+	luamethod(MetaDataRef, get),
 	luamethod(MetaDataRef, get_string),
 	luamethod(MetaDataRef, set_string),
 	luamethod(MetaDataRef, get_int),
@@ -269,6 +268,8 @@ void NodeMetaRef::RegisterClient(lua_State *L)
 
 
 const luaL_Reg NodeMetaRef::methodsClient[] = {
+	luamethod(MetaDataRef, contains),
+	luamethod(MetaDataRef, get),
 	luamethod(MetaDataRef, get_string),
 	luamethod(MetaDataRef, get_int),
 	luamethod(MetaDataRef, get_float),

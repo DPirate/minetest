@@ -17,26 +17,26 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#ifndef EMERGE_HEADER
-#define EMERGE_HEADER
+#pragma once
 
 #include <map>
 #include <mutex>
+#include "network/networkprotocol.h"
 #include "irr_v3d.h"
 #include "util/container.h"
-#include "mapgen.h" // for MapgenParams
+#include "mapgen/mapgen.h" // for MapgenParams
 #include "map.h"
 
 #define BLOCK_EMERGE_ALLOW_GEN   (1 << 0)
 #define BLOCK_EMERGE_FORCE_QUEUE (1 << 1)
 
-#define EMERGE_DBG_OUT(x) do {                         \
+#define EMERGE_DBG_OUT(x) {                            \
 	if (enable_mapgen_debug_info)                      \
 		infostream << "EmergeThread: " x << std::endl; \
-} while (0)
+}
 
 class EmergeThread;
-class INodeDefManager;
+class NodeDefManager;
 class Settings;
 
 class BiomeManager;
@@ -53,9 +53,10 @@ struct BlockMakeData {
 	v3s16 blockpos_max;
 	v3s16 blockpos_requested;
 	UniqueQueue<v3s16> transforming_liquid;
-	INodeDefManager *nodedef = nullptr;
+	const NodeDefManager *nodedef = nullptr;
 
-	BlockMakeData() {}
+	BlockMakeData() = default;
+
 	~BlockMakeData() { delete vmanip; }
 };
 
@@ -87,7 +88,7 @@ struct BlockEmergeData {
 
 class EmergeManager {
 public:
-	INodeDefManager *ndef;
+	const NodeDefManager *ndef;
 	bool enable_mapgen_debug_info;
 
 	// Generation Notify
@@ -123,14 +124,14 @@ public:
 	bool isRunning();
 
 	bool enqueueBlockEmerge(
-		u16 peer_id,
+		session_t peer_id,
 		v3s16 blockpos,
 		bool allow_generate,
 		bool ignore_queue_limits=false);
 
 	bool enqueueBlockEmergeEx(
 		v3s16 blockpos,
-		u16 peer_id,
+		session_t peer_id,
 		u16 flags,
 		EmergeCompletionCallback callback,
 		void *callback_param);
@@ -174,5 +175,3 @@ private:
 
 	friend class EmergeThread;
 };
-
-#endif

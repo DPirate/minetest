@@ -17,15 +17,15 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#include "socket.h" // for select()
-#include "porting.h" // for sleep_ms(), get_sysinfo(), secure_rand_fill_buf()
 #include "httpfetch.h"
+#include "porting.h" // for sleep_ms(), get_sysinfo(), secure_rand_fill_buf()
 #include <iostream>
 #include <sstream>
 #include <list>
 #include <map>
-#include <errno.h>
+#include <cerrno>
 #include <mutex>
+#include "network/socket.h" // for select()
 #include "threading/event.h"
 #include "config.h"
 #include "exceptions.h"
@@ -170,7 +170,8 @@ class CurlHandlePool
 	std::list<CURL*> handles;
 
 public:
-	CurlHandlePool() {}
+	CurlHandlePool() = default;
+
 	~CurlHandlePool()
 	{
 		for (std::list<CURL*>::iterator it = handles.begin();
@@ -244,7 +245,8 @@ HTTPFetchOngoing::HTTPFetchOngoing(const HTTPFetchRequest &request_,
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
 	curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1);
 	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
-	curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 1);
+	curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 3);
+	curl_easy_setopt(curl, CURLOPT_ENCODING, "gzip");
 
 	std::string bind_address = g_settings->get("bind_address");
 	if (!bind_address.empty()) {
@@ -272,7 +274,7 @@ HTTPFetchOngoing::HTTPFetchOngoing(const HTTPFetchRequest &request_,
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS,
 			request.connect_timeout);
 
-	if (request.useragent != "")
+	if (!request.useragent.empty())
 		curl_easy_setopt(curl, CURLOPT_USERAGENT, request.useragent.c_str());
 
 	// Set up a write callback that writes to the
@@ -308,13 +310,12 @@ HTTPFetchOngoing::HTTPFetchOngoing(const HTTPFetchRequest &request_,
 	} else if (request.post_data.empty()) {
 		curl_easy_setopt(curl, CURLOPT_POST, 1);
 		std::string str;
-		for (StringMap::iterator it = request.post_fields.begin();
-				it != request.post_fields.end(); ++it) {
-			if (str != "")
+		for (auto &post_field : request.post_fields) {
+			if (!str.empty())
 				str += "&";
-			str += urlencode(it->first);
+			str += urlencode(post_field.first);
 			str += "=";
-			str += urlencode(it->second);
+			str += urlencode(post_field.second);
 		}
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE,
 				str.size());
@@ -330,9 +331,8 @@ HTTPFetchOngoing::HTTPFetchOngoing(const HTTPFetchRequest &request_,
 		// modified until CURLOPT_POSTFIELDS is cleared
 	}
 	// Set additional HTTP headers
-	for (std::vector<std::string>::iterator it = request.extra_headers.begin();
-			it != request.extra_headers.end(); ++it) {
-		http_header = curl_slist_append(http_header, it->c_str());
+	for (const std::string &extra_header : request.extra_headers) {
+		http_header = curl_slist_append(http_header, extra_header.c_str());
 	}
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, http_header);
 
@@ -643,8 +643,6 @@ protected:
 
 	void *run()
 	{
-		DSTACK(FUNCTION_NAME);
-
 		CurlHandlePool pool;
 
 		m_multi = curl_multi_init();
@@ -708,8 +706,8 @@ protected:
 		}
 
 		// Call curl_multi_remove_handle and cleanup easy handles
-		for (size_t i = 0; i < m_all_ongoing.size(); ++i) {
-			delete m_all_ongoing[i];
+		for (HTTPFetchOngoing *i : m_all_ongoing) {
+			delete i;
 		}
 		m_all_ongoing.clear();
 

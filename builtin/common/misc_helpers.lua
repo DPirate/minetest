@@ -120,7 +120,12 @@ end
 -- The dumped and level arguments are internal-only.
 
 function dump(o, indent, nested, level)
-	if type(o) ~= "table" then
+	local t = type(o)
+	if not level and t == "userdata" then
+		-- when userdata (e.g. player) is passed directly, print its metatable:
+		return "userdata metatable: " .. dump(getmetatable(o))
+	end
+	if t ~= "table" then
 		return basic_dump(o)
 	end
 	-- Contains table -> true/nil of currently nested tables
@@ -308,59 +313,25 @@ function core.formspec_escape(text)
 end
 
 
-function core.wrap_text(text, charlimit)
-	local retval = {}
-
-	local current_idx = 1
-
-	local start,stop = string_find(text, " ", current_idx)
-	local nl_start,nl_stop = string_find(text, "\n", current_idx)
-	local gotnewline = false
-	if nl_start ~= nil and (start == nil or nl_start < start) then
-		start = nl_start
-		stop = nl_stop
-		gotnewline = true
-	end
-	local last_line = ""
-	while start ~= nil do
-		if string.len(last_line) + (stop-start) > charlimit then
-			retval[#retval + 1] = last_line
-			last_line = ""
-		end
-
-		if last_line ~= "" then
-			last_line = last_line .. " "
-		end
-
-		last_line = last_line .. string_sub(text, current_idx, stop - 1)
-
-		if gotnewline then
-			retval[#retval + 1] = last_line
-			last_line = ""
-			gotnewline = false
-		end
-		current_idx = stop+1
-
-		start,stop = string_find(text, " ", current_idx)
-		nl_start,nl_stop = string_find(text, "\n", current_idx)
-
-		if nl_start ~= nil and (start == nil or nl_start < start) then
-			start = nl_start
-			stop = nl_stop
-			gotnewline = true
-		end
+function core.wrap_text(text, max_length, as_table)
+	local result = {}
+	local line = {}
+	if #text <= max_length then
+		return as_table and {text} or text
 	end
 
-	--add last part of text
-	if string.len(last_line) + (string.len(text) - current_idx) > charlimit then
-			retval[#retval + 1] = last_line
-			retval[#retval + 1] = string_sub(text, current_idx)
-	else
-		last_line = last_line .. " " .. string_sub(text, current_idx)
-		retval[#retval + 1] = last_line
+	for word in text:gmatch('%S+') do
+		local cur_length = #table.concat(line, ' ')
+		if cur_length > 0 and cur_length + #word + 1 >= max_length then
+			-- word wouldn't fit on current line, move to next line
+			table.insert(result, table.concat(line, ' '))
+			line = {}
+		end
+		table.insert(line, word)
 	end
 
-	return retval
+	table.insert(result, table.concat(line, ' '))
+	return as_table and result or table.concat(result, '\n')
 end
 
 --------------------------------------------------------------------------------
@@ -370,7 +341,7 @@ if INIT == "game" then
 	local dirs2 = {20, 23, 22, 21}
 
 	function core.rotate_and_place(itemstack, placer, pointed_thing,
-				infinitestacks, orient_flags)
+			infinitestacks, orient_flags, prevent_after_place)
 		orient_flags = orient_flags or {}
 
 		local unode = core.get_node_or_nil(pointed_thing.under)
@@ -379,39 +350,18 @@ if INIT == "game" then
 		end
 		local undef = core.registered_nodes[unode.name]
 		if undef and undef.on_rightclick then
-			undef.on_rightclick(pointed_thing.under, unode, placer,
+			return undef.on_rightclick(pointed_thing.under, unode, placer,
 					itemstack, pointed_thing)
-			return
 		end
-		local fdir = core.dir_to_facedir(placer:get_look_dir())
-		local wield_name = itemstack:get_name()
+		local fdir = placer and core.dir_to_facedir(placer:get_look_dir()) or 0
 
 		local above = pointed_thing.above
 		local under = pointed_thing.under
 		local iswall = (above.y == under.y)
 		local isceiling = not iswall and (above.y < under.y)
-		local anode = core.get_node_or_nil(above)
-		if not anode then
-			return
-		end
-		local pos = pointed_thing.above
-		local node = anode
 
 		if undef and undef.buildable_to then
-			pos = pointed_thing.under
-			node = unode
 			iswall = false
-		end
-
-		if core.is_protected(pos, placer:get_player_name()) then
-			core.record_protection_violation(pos,
-					placer:get_player_name())
-			return
-		end
-
-		local ndef = core.registered_nodes[node.name]
-		if not ndef or not ndef.buildable_to then
-			return
 		end
 
 		if orient_flags.force_floor then
@@ -427,31 +377,26 @@ if INIT == "game" then
 			iswall = not iswall
 		end
 
+		local param2 = fdir
 		if iswall then
-			core.set_node(pos, {name = wield_name,
-					param2 = dirs1[fdir + 1]})
+			param2 = dirs1[fdir + 1]
 		elseif isceiling then
 			if orient_flags.force_facedir then
-				core.set_node(pos, {name = wield_name,
-						param2 = 20})
+				cparam2 = 20
 			else
-				core.set_node(pos, {name = wield_name,
-						param2 = dirs2[fdir + 1]})
+				param2 = dirs2[fdir + 1]
 			end
 		else -- place right side up
 			if orient_flags.force_facedir then
-				core.set_node(pos, {name = wield_name,
-						param2 = 0})
-			else
-				core.set_node(pos, {name = wield_name,
-						param2 = fdir})
+				param2 = 0
 			end
 		end
 
-		if not infinitestacks then
-			itemstack:take_item()
-			return itemstack
-		end
+		local old_itemstack = ItemStack(itemstack)
+		local new_itemstack, removed = core.item_place_node(
+			itemstack, placer, pointed_thing, param2, prevent_after_place
+		)
+		return infinitestacks and old_itemstack or new_itemstack
 	end
 
 
@@ -459,12 +404,18 @@ if INIT == "game" then
 --Wrapper for rotate_and_place() to check for sneak and assume Creative mode
 --implies infinite stacks when performing a 6d rotation.
 --------------------------------------------------------------------------------
-
+	local creative_mode_cache = core.settings:get_bool("creative_mode")
+	local function is_creative(name)
+		return creative_mode_cache or
+				core.check_player_privs(name, {creative = true})
+	end
 
 	core.rotate_node = function(itemstack, placer, pointed_thing)
+		local name = placer and placer:get_player_name() or ""
+		local invert_wall = placer and placer:get_player_control().sneak or false
 		core.rotate_and_place(itemstack, placer, pointed_thing,
-				core.settings:get_bool("creative_mode"),
-				{invert_wall = placer:get_player_control().sneak})
+				is_creative(name),
+				{invert_wall = invert_wall}, true)
 		return itemstack
 	end
 end
@@ -600,12 +551,22 @@ function table.copy(t, seen)
 	end
 	return n
 end
+
+
+function table.insert_all(t, other)
+	for i=1, #other do
+		t[#t + 1] = other[i]
+	end
+	return t
+end
+
+
 --------------------------------------------------------------------------------
 -- mainmenu only functions
 --------------------------------------------------------------------------------
 if INIT == "mainmenu" then
 	function core.get_game(index)
-		local games = game.get_games()
+		local games = core.get_games()
 
 		if index > 0 and index <= #games then
 			return games[index]
@@ -680,10 +641,57 @@ function core.strip_colors(str)
 	return (str:gsub(ESCAPE_CHAR .. "%([bc]@[^)]+%)", ""))
 end
 
+function core.translate(textdomain, str, ...)
+	local start_seq
+	if textdomain == "" then
+		start_seq = ESCAPE_CHAR .. "T"
+	else
+		start_seq = ESCAPE_CHAR .. "(T@" .. textdomain .. ")"
+	end
+	local arg = {n=select('#', ...), ...}
+	local end_seq = ESCAPE_CHAR .. "E"
+	local arg_index = 1
+	local translated = str:gsub("@(.)", function(matched)
+		local c = string.byte(matched)
+		if string.byte("1") <= c and c <= string.byte("9") then
+			local a = c - string.byte("0")
+			if a ~= arg_index then
+				error("Escape sequences in string given to core.translate " ..
+					"are not in the correct order: got @" .. matched ..
+					"but expected @" .. tostring(arg_index))
+			end
+			if a > arg.n then
+				error("Not enough arguments provided to core.translate")
+			end
+			arg_index = arg_index + 1
+			return ESCAPE_CHAR .. "F" .. arg[a] .. ESCAPE_CHAR .. "E"
+		elseif matched == "n" then
+			return "\n"
+		else
+			return matched
+		end
+	end)
+	if arg_index < arg.n + 1 then
+		error("Too many arguments provided to core.translate")
+	end
+	return start_seq .. translated .. end_seq
+end
+
+function core.get_translator(textdomain)
+	return function(str, ...) return core.translate(textdomain or "", str, ...) end
+end
+
 --------------------------------------------------------------------------------
 -- Returns the exact coordinate of a pointed surface
 --------------------------------------------------------------------------------
 function core.pointed_thing_to_face_pos(placer, pointed_thing)
+	-- Avoid crash in some situations when player is inside a node, causing
+	-- 'above' to equal 'under'.
+	if vector.equals(pointed_thing.above, pointed_thing.under) then
+		return pointed_thing.under
+	end
+
+	local eye_height = placer:get_properties().eye_height
 	local eye_offset_first = placer:get_eye_offset()
 	local node_pos = pointed_thing.under
 	local camera_pos = placer:get_pos()
@@ -703,7 +711,7 @@ function core.pointed_thing_to_face_pos(placer, pointed_thing)
 	end
 
 	local fine_pos = {[nc] = node_pos[nc] + offset}
-	camera_pos.y = camera_pos.y + 1.625 + eye_offset_first.y / 10
+	camera_pos.y = camera_pos.y + eye_height + eye_offset_first.y / 10
 	local f = (node_pos[nc] + offset - camera_pos[nc]) / look_dir[nc]
 
 	for i = 1, #oc do
